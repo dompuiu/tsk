@@ -196,7 +196,7 @@ fn project_archive_escapes_control_project_names() {
         "tsk".into(),
         "project".into(),
         "archive".into(),
-        format!("missing\u{001b}[2Jname"),
+        "missing\u{001b}[2Jname".to_string(),
         "--state-dir".into(),
         state_dir_arg(&dir),
     ]);

@@ -59,7 +59,7 @@ If the launch fails, the task stays unstarted with no dispatch, and the status r
 
 If Rex answers without naming the tab it opened, the worktree and branch stay, since the agent may run there. Check the session before you dispatch again.
 
-The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. A profile's `prompt_append` adds your own lines to the default, and a project's settings can add more and name who gets the review. See [prompt and placeholders](/docs/storage/#prompt-and-placeholders) and [project settings](/docs/storage/#project-settings). `tsk dispatch T12 --show-prompt` prints what an agent would get.
+The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review; with [`[workflow] pull_requests = false`](/docs/storage/#how-work-lands), it commits on its branch and never pushes. A profile's `prompt_append` adds your own lines to the default, and a project's settings can add more and name who gets the review. See [prompt and placeholders](/docs/storage/#prompt-and-placeholders) and [project settings](/docs/storage/#project-settings). `tsk dispatch T12 --show-prompt` prints what an agent would get.
 
 `ctrl+u` right after a dispatch undoes the start only. The agent keeps running in its worktree, and the status row says so:
 
@@ -198,16 +198,27 @@ branch    tsk/t12-fix-login-timeout
                                                      esc cancel
 ```
 
+With [`pull_requests = false`](/docs/storage/#how-work-lands) the card merges the branch instead, and never mentions a pull request:
+
+```text
+3 commits ahead of main:
+
+▸ m  merge branch to main · mark done · remove worktree, branch and agent pane
+  y  don't merge · mark done · remove worktree and agent pane · keep the branch
+  n  don't merge · mark done · keep everything
+```
+
 On the card, **agent pane** means the dispatch's Herdr workspace. For a Rex dispatch the card says **agent tab**.
 
 | Where the branch stands | Options |
 | --- | --- |
 | Open pull request | `m` merges it ([below](#merge-the-pull-request)); `y` keeps the branch and pull request; `n` keeps everything |
+| Ahead of the base, in local mode | `m` merges the branch ([below](#merge-the-branch-locally)); `y` keeps the branch; `n` keeps everything |
 | Merged, such as `Merged into main ✓` | `y` removes the worktree, branch, and workspace or tab; `n` keeps everything |
 | Not merged, or the merge cannot be confirmed | `y` removes the worktree and workspace or tab, and keeps the branch; `n` keeps everything |
 | Uncommitted files in the worktree | Only `n`: commit or discard them first to tidy up |
 
-Every option marks the task done, and options that do not apply are left out. Without the GitHub CLI (`gh`) logged in, the card never mentions a pull request.
+Every option marks the task done, and options that do not apply are left out. Without the GitHub CLI (`gh`) logged in, the card never mentions a pull request. In local mode it never asks `gh` anything, and a base that cannot take the branch leaves `m` out and says why: `Not merged into main · main has uncommitted changes`.
 
 ### After you choose
 
@@ -226,9 +237,10 @@ Cleanup closes the dispatch's Herdr workspace or Rex tab and removes its worktre
 
 - It fetches the base first, so a merge on GitHub counts without a local pull.
 - A squash or rebase merge leaves no Git ancestry, so with `gh` logged in, cleanup asks GitHub. It deletes the branch only when the pull request merged into the recorded base and its head is exactly the local branch tip.
+- A [local merge](#merge-the-branch-locally) is its own evidence: cleanup deletes the branch while both tips are still what tsk landed, whether the method was `merge`, `squash`, or `rebase`.
 - Otherwise it keeps the branch and says why: not merged, fetch failed, base gone, or branch checked out elsewhere.
 
-Cleanup never touches uncommitted changes, the project root, or any path other than the recorded worktree. tsk never deletes remote branches. The task keeps its dispatch record, marked cleaned. From a script, use [`tsk clean`](/docs/cli/#clean).
+Cleanup never touches uncommitted changes, any path other than the recorded worktree, or the project root — a local merge moves the base branch there before cleanup runs. tsk never deletes remote branches. The task keeps its dispatch record, marked cleaned. From a script, use [`tsk clean`](/docs/cli/#clean).
 
 ### A marked set
 
@@ -248,6 +260,8 @@ Each option line names the tasks it touches. What each key does to each task:
 | `y` | Done, tidy | Done, full tidy | Done, tidy | Unchanged |
 | `n` | Done | Done | Done | Done |
 
+In [local mode](#merge-the-branch-locally) the rows and the `m` line name each branch and its base instead: `T12 3 commits ahead of main`, `m squash-merge T12's branch into main`.
+
 A full tidy removes the worktree, branch, and workspace or tab; a tidy keeps the branch. Tasks without a dispatch are marked done under every key. One failure never stops the others, and the status row ends with a count that names the tasks that kept something. `Esc` keeps the marks.
 
 ## Merge the pull request
@@ -265,6 +279,34 @@ The method comes from [`[merge]` in `config.toml`](/docs/storage/#configuration)
 - When the merge fails, nothing changes, and the card shows gh's reason.
 
 Quitting waits for a running merge. On a marked set, `m` merges each open pull request in turn, and one failure never stops the others. From a script, use [`tsk status T12 done --merge`](/docs/cli/#status).
+
+## Merge the branch locally
+
+With [`[workflow] pull_requests = false`](/docs/storage/#how-work-lands), work lands without a pull request. The agent commits on its branch and stops. `m` merges that branch into the recorded base in your project clone, and `gh` is never called.
+
+The card's wording follows the method: `merge branch to main`, `squash-merge branch to main`, or `rebase branch onto main`. It says how far ahead the branch is: `3 commits ahead of main:`.
+
+Where the merge runs:
+
+- When your project clone has the base checked out, the merge happens there and the base branch moves. That checkout must be clean.
+- When no worktree has the base, tsk uses a temporary worktree and moves the base ref afterwards. Your own checkout is not touched.
+- A base checked out in another worktree is refused rather than moved under it.
+
+`m` checks before it touches anything. When it cannot land, the card leaves `m` out and says why in the branch line:
+
+| The card says | When |
+| --- | --- |
+| `no local main branch` | The project clone has no local branch of the recorded base's name |
+| `main is behind the recorded base` | The local base lacks the commit the dispatch started from |
+| `main has uncommitted changes` | The checkout holding the base has uncommitted work |
+| `main is checked out in another worktree` | Another worktree has the base |
+| `main already has every commit on the branch` | There is nothing to land |
+
+A merge that conflicts or fails aborts and changes nothing; the card shows the reason. [`tsk clean`](/docs/cli/#clean) lists the refusal codes.
+
+`[merge] method` picks the shape: a merge commit, one commit subject `T12 <title>`, or the branch's commits replayed onto the base.
+
+On success the task is marked done and cleaned as with `y`, and the outcome names the method and the untouched remote: `Done T12 · merged branch tsk/t12-fix-login-timeout into main (squash) · not pushed · cleaned`. From a script, [`tsk status T12 done --merge`](/docs/cli/#status) lands the branch the same way.
 
 ## Windows (preview)
 

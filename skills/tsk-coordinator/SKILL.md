@@ -54,12 +54,14 @@ With tsk, run `tsk guide` first: the tsk skill owns every command. This skill ne
      `review_on` under the project's `[project."<path>"]` in `config.toml` puts your name in the
      default prompt's `--on` ([project settings](https://gettsk.sh/docs/storage.md#project-settings)).
    - Without tsk, have the agent message you when done, or watch its status in a background loop.
-6. **Review gate.** Run it on every pull request ([below](#review-gate)).
+6. **Review gate.** Run it on every change the builder hands back ([below](#review-gate)).
 7. **Live test.** Run the change the way its user would ([below](#live-test)).
 8. **Hand the review to the user.** Once the review gate and live test pass, the review waits on
    them, not you: with tsk, `tsk edit T12 --on you`.
-9. **Merge.** The user merges unless they granted you a merge. With tsk the user merges from the
-   board (`m` on the cleanup card). Never mark a task done unless the user said so.
+9. **Land.** The user lands the work unless they granted you that. With tsk it happens from the
+   board (`m` on the cleanup card) or `tsk status T12 done --merge`, which merges the task's pull
+   request or, when `config.toml` sets `[workflow] pull_requests = false`, its branch in the
+   project clone. Never mark a task done unless the user said so.
 10. **Clean up** after every merge, into an integration branch too. Keep any review-run records
     first. Close the builder's Herdr workspace or Rex tab, then remove its worktree and branch.
     For a dispatched task `tsk clean T12` does all three (it keeps a branch it cannot confirm
@@ -81,7 +83,7 @@ If the board lacks something that would help, tell the user.
 - Standing rules: read the project rules, work only on its branch, run tests, typecheck and build
   before claiming done, never merge or deploy, never print secrets, no restarts of shared
   services without asking.
-- "Open a pull request, do not merge, hand back when done."
+- "Land the work the way this project does, do not merge it yourself, hand back when done."
 
 ## Review gate
 

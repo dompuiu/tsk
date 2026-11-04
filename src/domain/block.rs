@@ -881,6 +881,7 @@ mod state_tests {
                     session: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
+                    landed: None,
                 },
             )
             .expect("dispatch");

@@ -606,6 +606,7 @@ fn blocked_dispatched_task(dir: &std::path::Path) {
                 session: "w0".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("record");

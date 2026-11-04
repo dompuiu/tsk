@@ -766,6 +766,75 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
         "{}",
         inside.stderr
     );
+
+    // A project that lands locally hands the agent the commit-only prompt.
+    fs::write(
+        dir.join("config.toml"),
+        format!(
+            "[workflow]\npull_requests = false\n\n\
+             [project.'{project}']\nreview_on = \"coordinator\"\n\
+             [agent.implementer]\ncommand = [\"runner\"]\n"
+        ),
+    )
+    .expect("config");
+    let local = run_with(
+        [
+            "tsk",
+            "dispatch",
+            "T1",
+            "--show-prompt",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(local.code, 0, "{}", local.stderr);
+    assert!(
+        local
+            .stdout
+            .contains("Commit your work on tsk/t1-ship-it-2."),
+        "{}",
+        local.stdout
+    );
+    assert!(
+        !local.stdout.contains("Push and open a pull request"),
+        "{}",
+        local.stdout
+    );
+
+    // A broken `[workflow]` falls back to pull requests and says so where the prompt is used.
+    fs::write(
+        dir.join("config.toml"),
+        "[workflow]\npull_requests = \"no\"\n\n[agent.implementer]\ncommand = [\"runner\"]\n",
+    )
+    .expect("config");
+    let broken = run_with(
+        [
+            "tsk",
+            "dispatch",
+            "T1",
+            "--show-prompt",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(broken.code, 0, "{}", broken.stderr);
+    assert!(
+        broken
+            .stdout
+            .contains("warning: config.toml: [workflow] pull_requests must be true or false"),
+        "{}",
+        broken.stdout
+    );
+    assert!(
+        broken.stdout.contains("Push and open a pull request"),
+        "the default applies: {}",
+        broken.stdout
+    );
+
     fs::remove_dir_all(dir).expect("cleanup");
     fs::remove_dir_all(repos).expect("cleanup repos");
 }
@@ -1381,6 +1450,7 @@ impl CleanupRepo {
                     session: "w1".into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
+                    landed: None,
                 },
             )
             .unwrap();
@@ -2437,8 +2507,11 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
         &mut system_host().with_gh(&gh),
     )
     .expect("merged");
-    assert_eq!(merged.outcome.pr.number, 7);
-    assert_eq!(merged.outcome.method.name(), "squash");
+    let tsk_tui::dispatch::pr::Merged::PullRequest(outcome) = &merged.outcome else {
+        panic!("a pull request merge");
+    };
+    assert_eq!(outcome.pr.number, 7);
+    assert_eq!(outcome.method.name(), "squash");
 
     // An invalid method refuses before gh is asked anything.
     fs::write(state_dir.join("config.toml"), "[merge]\nmethod = \"ff\"\n").unwrap();
@@ -2674,4 +2747,521 @@ fn a_merge_whose_cleanup_is_refused_still_reports_the_merge_and_the_done_in_json
     );
     assert_eq!(task_on_disk(&state_dir).status, HumanStatus::Done);
     assert!(repo.worktree.exists());
+}
+
+/// A project that lands branches locally: `[workflow] pull_requests = false`, base `base`
+/// checked out nowhere, and the task branch one commit ahead of it. Returns the state dir and
+/// the base tip before the land.
+#[cfg(unix)]
+fn local_repo(repo: &CleanupRepo, method: &str) -> (PathBuf, String) {
+    repo.commit_files(&[("feature.txt", "work\n")]);
+    let (state, _) = repo.state("base", None);
+    let state_dir = repo.root.join("state");
+    TaskStore::new(&state_dir).save(&state).unwrap();
+    fs::write(
+        state_dir.join("config.toml"),
+        format!("[workflow]\npull_requests = false\n\n[merge]\nmethod = \"{method}\"\n"),
+    )
+    .unwrap();
+    (state_dir, repo.git(&["rev-parse", "base"]))
+}
+
+/// A host whose `config.toml` is the task's own: `[workflow]` comes from there.
+#[cfg(unix)]
+fn host_for(state_dir: &Path) -> tsk_tui::dispatch::SystemDispatchHost {
+    tsk_tui::dispatch::SystemDispatchHost::in_state_dir(state_dir)
+}
+
+#[cfg(unix)]
+fn done_clean(state_dir: &Path, gh: &Path) -> tsk_tui::cli::CliOutput {
+    tsk_tui::cli::merge_done_clean_with_host(
+        TaskAddress::Number(1),
+        state_dir.to_path_buf(),
+        "clean",
+        false,
+        HostKind::Standalone,
+        &mut host_for(state_dir).with_gh(gh),
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn a_local_land_merges_the_branch_saves_done_and_cleans_without_gh() {
+    let repo = CleanupRepo::new();
+    let (state_dir, before) = local_repo(&repo, "merge");
+    let (gh, log) = stub_gh(&repo, "OPEN", "unused", 0);
+
+    let output = done_clean(&state_dir, &gh);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert!(
+        output
+            .stdout
+            .contains("merged T1 branch tsk/t1-clean into base (merge) · not pushed"),
+        "{}",
+        output.stdout
+    );
+    assert!(!log.exists(), "local mode never asks gh");
+
+    // The base holds the work, in a merge commit, and nothing was pushed anywhere.
+    assert_ne!(repo.git(&["rev-parse", "base"]), before);
+    assert_eq!(repo.git(&["show", "base:feature.txt"]), "work");
+    assert_eq!(
+        repo.git(&[
+            "rev-list",
+            "--count",
+            "--merges",
+            &format!("{before}..base")
+        ]),
+        "1",
+        "a merge commit, the configured method"
+    );
+    assert!(repo.git(&["remote"]).is_empty());
+
+    let task = task_on_disk(&state_dir);
+    assert_eq!(task.status, HumanStatus::Done);
+    let landed = task
+        .dispatch
+        .as_ref()
+        .and_then(|record| record.landed.clone())
+        .expect("the land is recorded");
+    assert_eq!(landed.base_commit, repo.git(&["rev-parse", "base"]));
+    assert_eq!(
+        repo.git(&["branch", "--list", "tsk/t1-clean"]),
+        "",
+        "the landed branch is deleted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_squash_land_deletes_the_branch_though_nothing_was_merged_by_ancestry() {
+    let repo = CleanupRepo::new();
+    let (state_dir, before) = local_repo(&repo, "squash");
+
+    let output = done_clean(&state_dir, Path::new("/nonexistent/gh"));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert!(
+        output
+            .stdout
+            .contains("branch tsk/t1-clean into base (squash)"),
+        "{}",
+        output.stdout
+    );
+    assert_eq!(repo.git(&["show", "base:feature.txt"]), "work");
+    assert_eq!(
+        repo.git(&["log", "--format=%s", "-1", "base"]),
+        "T1 cleanup",
+        "the squash commit takes the task as its subject"
+    );
+    assert_eq!(
+        repo.git(&["merge-base", "--is-ancestor", &before, "base"])
+            .len(),
+        0,
+        "the base moved forward"
+    );
+    assert_eq!(
+        repo.git(&["branch", "--list", "tsk/t1-clean"]),
+        "",
+        "the recorded land deletes a branch ancestry reads as unmerged"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rebase_land_replays_the_branch_onto_the_base() {
+    let repo = CleanupRepo::new();
+    let (state_dir, _) = local_repo(&repo, "rebase");
+    let output = done_clean(&state_dir, Path::new("/nonexistent/gh"));
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(repo.git(&["show", "base:feature.txt"]), "work");
+    assert_eq!(repo.git(&["log", "--format=%s", "-1", "base"]), "work");
+    assert_eq!(
+        repo.git(&["rev-list", "--count", "--merges", "base~1..base"]),
+        "0",
+        "a replay, not a merge commit"
+    );
+    assert_eq!(repo.git(&["branch", "--list", "tsk/t1-clean"]), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dirty_base_checkout_refuses_the_land_and_changes_nothing() {
+    let repo = CleanupRepo::new();
+    let (state_dir, before) = local_repo(&repo, "merge");
+    repo.git(&["checkout", "-q", "base"]);
+    fs::write(repo.project.join("scratch.txt"), "dirty\n").unwrap();
+
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect_err("a dirty base refuses");
+    assert_eq!(refused.code(), "base-dirty", "{}", refused.message());
+    assert!(refused
+        .message()
+        .contains("base has uncommitted changes in your checkout"));
+    assert_eq!(repo.git(&["rev-parse", "base"]), before);
+    assert_ne!(task_on_disk(&state_dir).status, HumanStatus::Done);
+    assert_ne!(repo.git(&["branch", "--list", "tsk/t1-clean"]), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_base_checked_out_in_another_worktree_refuses_the_land() {
+    let repo = CleanupRepo::new();
+    let (state_dir, before) = local_repo(&repo, "merge");
+    let other = repo.root.join("elsewhere");
+    repo.git(&["worktree", "add", "-q", other.to_str().unwrap(), "base"]);
+
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect_err("the base is held elsewhere");
+    assert_eq!(refused.code(), "base-checked-out");
+    assert_eq!(repo.git(&["rev-parse", "base"]), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_conflict_refuses_every_method_and_leaves_the_base_and_no_worktree_behind() {
+    for method in ["merge", "squash", "rebase"] {
+        let repo = CleanupRepo::new();
+        let (state_dir, _) = local_repo(&repo, method);
+        // A base that changed the same file the branch changed.
+        let other = repo.root.join("conflicting");
+        repo.git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            other.to_str().unwrap(),
+            "base",
+        ]);
+        fs::write(other.join("feature.txt"), "other\n").unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&other)
+            .args(["add", "feature.txt"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&other)
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "other",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        repo.git(&["worktree", "remove", "--force", other.to_str().unwrap()]);
+        repo.git(&["update-ref", "refs/heads/base", "side"]);
+        let base_before = repo.git(&["rev-parse", "base"]);
+
+        let refused = clean::merge_with_host(
+            TaskAddress::Number(1),
+            Some(state_dir.clone()),
+            HostKind::Standalone,
+            &mut host_for(&state_dir),
+        )
+        .expect_err("a conflict refuses");
+        assert_eq!(
+            refused.code(),
+            "land-conflict",
+            "{method}: {}",
+            refused.message()
+        );
+        assert!(
+            refused.message().contains("nothing changed"),
+            "{method}: {}",
+            refused.message()
+        );
+        assert_eq!(repo.git(&["rev-parse", "base"]), base_before, "{method}");
+        assert_eq!(
+            repo.git(&["worktree", "list"]).lines().count(),
+            2,
+            "{method}: the throwaway worktree is gone: {}",
+            repo.git(&["worktree", "list"])
+        );
+        assert_ne!(
+            task_on_disk(&state_dir).status,
+            HumanStatus::Done,
+            "{method}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_conflict_in_your_own_base_checkout_aborts_and_leaves_it_clean() {
+    let repo = CleanupRepo::new();
+    let (state_dir, _) = local_repo(&repo, "squash");
+    repo.git(&["checkout", "-q", "base"]);
+    fs::write(repo.project.join("feature.txt"), "other\n").unwrap();
+    repo.git(&["add", "feature.txt"]);
+    repo.git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "other",
+    ]);
+    let base_before = repo.git(&["rev-parse", "base"]);
+
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect_err("a conflict refuses");
+    assert_eq!(refused.code(), "land-conflict", "{}", refused.message());
+    assert_eq!(repo.git(&["rev-parse", "base"]), base_before);
+    assert!(
+        repo.git(&["status", "--porcelain", "--untracked-files=all"])
+            .is_empty(),
+        "the aborted squash leaves the checkout clean: {}",
+        repo.git(&["status", "--porcelain", "--untracked-files=all"])
+    );
+    assert_eq!(task_on_disk(&state_dir).status, HumanStatus::Started);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_branch_with_nothing_new_refuses_with_nothing_to_land() {
+    let repo = CleanupRepo::new();
+    let (state, _) = repo.state("base", None);
+    let state_dir = repo.root.join("state");
+    TaskStore::new(&state_dir).save(&state).unwrap();
+    fs::write(
+        state_dir.join("config.toml"),
+        "[workflow]\npull_requests = false\n",
+    )
+    .unwrap();
+    // The branch carries no commit the base lacks: it was created from it, nothing more.
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect_err("nothing to land");
+    assert_eq!(refused.code(), "nothing-to-land");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_broken_workflow_setting_refuses_before_anything_is_landed() {
+    let repo = CleanupRepo::new();
+    let (state_dir, before) = local_repo(&repo, "merge");
+    fs::write(
+        state_dir.join("config.toml"),
+        "[workflow]\npull_requests = \"no\"\n",
+    )
+    .unwrap();
+
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect_err("a bad [workflow] refuses");
+    assert_eq!(refused.code(), "workflow-config");
+    assert_eq!(repo.git(&["rev-parse", "base"]), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_squash_of_commits_that_change_nothing_refuses_with_nothing_to_land() {
+    let repo = CleanupRepo::new();
+    // A commit ahead of the base that carries no change: `--squash` stages nothing.
+    repo.commit_in_worktree("empty work");
+    let (state, _) = repo.state("base", None);
+    let state_dir = repo.root.join("state");
+    TaskStore::new(&state_dir).save(&state).unwrap();
+    fs::write(
+        state_dir.join("config.toml"),
+        "[workflow]\npull_requests = false\n\n[merge]\nmethod = \"squash\"\n",
+    )
+    .unwrap();
+    let before = repo.git(&["rev-parse", "base"]);
+
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect_err("nothing to land");
+    assert_eq!(refused.code(), "nothing-to-land", "{}", refused.message());
+    assert_eq!(repo.git(&["rev-parse", "base"]), before);
+    assert!(
+        repo.git(&["status", "--porcelain"]).is_empty(),
+        "the refusal stages nothing"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_local_base_refuses_before_anything_is_landed() {
+    let repo = CleanupRepo::new();
+    let (state_dir, _) = local_repo(&repo, "merge");
+    let base_tip = repo.git(&["rev-parse", "base"]);
+    repo.git(&["branch", "-D", "base"]);
+
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect_err("no local base");
+    assert_eq!(refused.code(), "base-missing", "{}", refused.message());
+    assert!(refused
+        .message()
+        .contains("no local base branch in the project clone"));
+    let _ = base_tip;
+    assert_ne!(task_on_disk(&state_dir).status, HumanStatus::Done);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_local_base_behind_the_dispatch_start_refuses_the_land() {
+    let repo = CleanupRepo::new();
+    repo.commit_files(&[("feature.txt", "work\n")]);
+    let (mut state, id) = repo.state("base", None);
+    // A commit the local base does not contain: the dispatch started from newer work.
+    let tree = repo.git(&["rev-parse", "base^{tree}"]);
+    let newer = repo.git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit-tree",
+        "-p",
+        "base",
+        "-m",
+        "newer base",
+        &tree,
+    ]);
+    let record = state.get(id).unwrap().dispatch.clone().unwrap();
+    state
+        .record_dispatch(
+            id,
+            tsk_tui::domain::Dispatch {
+                base_commit: Some(newer),
+                ..record
+            },
+        )
+        .unwrap();
+    let state_dir = repo.root.join("state");
+    TaskStore::new(&state_dir).save(&state).unwrap();
+    fs::write(
+        state_dir.join("config.toml"),
+        "[workflow]\npull_requests = false\n",
+    )
+    .unwrap();
+    let before = repo.git(&["rev-parse", "base"]);
+
+    let refused = clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir),
+        HostKind::Standalone,
+        &mut host_for(&repo.root.join("state")),
+    )
+    .expect_err("the base is behind");
+    assert_eq!(refused.code(), "base-behind", "{}", refused.message());
+    assert_eq!(repo.git(&["rev-parse", "base"]), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_branch_that_moved_after_its_land_keeps_the_branch() {
+    let repo = CleanupRepo::new();
+    let (state_dir, _) = local_repo(&repo, "merge");
+    clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect("landed");
+    repo.commit_in_worktree("more work after the land");
+
+    let result = clean::run_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir),
+        HostKind::Standalone,
+        &mut host_for(&repo.root.join("state")),
+    )
+    .expect("cleaned");
+    assert_eq!(result.worktree, WorktreeCleanup::Removed);
+    assert_eq!(
+        result.branch_reason,
+        Some(tsk_tui::dispatch::BranchRetentionReason::LandedNewerCommits)
+    );
+    assert_ne!(repo.git(&["branch", "--list", "tsk/t1-clean"]), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_base_that_moved_after_the_land_keeps_the_branch() {
+    let repo = CleanupRepo::new();
+    let (state_dir, _) = local_repo(&repo, "merge");
+    clean::merge_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir.clone()),
+        HostKind::Standalone,
+        &mut host_for(&state_dir),
+    )
+    .expect("landed");
+    // Someone commits on the base after the land.
+    let other = repo.root.join("after-land");
+    repo.git(&["worktree", "add", "-q", other.to_str().unwrap(), "base"]);
+    fs::write(other.join("later.txt"), "later\n").unwrap();
+    repo.git(&["-C", other.to_str().unwrap(), "add", "later.txt"]);
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&other)
+        .args([
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "later",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    repo.git(&["worktree", "remove", "--force", other.to_str().unwrap()]);
+
+    let result = clean::run_with_host(
+        TaskAddress::Number(1),
+        Some(state_dir),
+        HostKind::Standalone,
+        &mut host_for(&repo.root.join("state")),
+    )
+    .expect("cleaned");
+    assert_eq!(
+        result.branch_reason,
+        Some(tsk_tui::dispatch::BranchRetentionReason::BaseMoved)
+    );
+    assert_ne!(repo.git(&["branch", "--list", "tsk/t1-clean"]), "");
 }

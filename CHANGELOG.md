@@ -12,6 +12,16 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Breaking
+
+- Store format 8 records a dispatch's local land: cleanup deletes the branch after a squash or rebase. Older tsk refuses it; roll back with `tsk.json.v7`.
+
+### Added
+
+- `[workflow] pull_requests = false` lands work locally: agents commit without pushing, and `m` merges the branch into the base instead of a pull request.
+- A `[project."<path>"] pull_requests` override lands one repository locally while others keep pull requests.
+- `[merge] method` also shapes a local land: a merge commit, one squash commit, or the branch's commits replayed onto the base.
+
 ## v0.14.1
 
 ### Added

@@ -192,13 +192,18 @@ pub fn pr_merged_deletion(
     }
 }
 
-/// One task's PR to merge: captured from the domain so the merge can run off the event loop.
+/// One task's merge to run: captured from the domain so it can run off the event loop. The
+/// project's mode decides whether its pull request merges or its branch lands locally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeRow {
     pub task_id: uuid::Uuid,
     pub number: u64,
+    /// The task title, the subject a squash land commits under.
+    pub title: String,
     pub project: std::path::PathBuf,
     pub record: Dispatch,
+    /// `[workflow] pull_requests` for the project: true merges the PR, false lands the branch.
+    pub pull_requests: bool,
 }
 
 /// A merged PR: which one, how, and whether the method's merge left its branch on the remote.
@@ -223,6 +228,68 @@ impl MergeOutcome {
     }
 }
 
+/// What `m` did to one task: merged its pull request through GitHub, or landed its branch
+/// into the recorded base locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Merged {
+    PullRequest(MergeOutcome),
+    Branch(super::land::LandOutcome),
+}
+
+impl Merged {
+    pub fn method(&self) -> MergeMethod {
+        match self {
+            Self::PullRequest(outcome) => outcome.method,
+            Self::Branch(outcome) => outcome.method,
+        }
+    }
+
+    /// What the card and the status row call it: `PR #7 (squash)`, `branch tsk/t12 into main
+    /// (squash)`.
+    pub fn phrase(&self, record: &Dispatch) -> String {
+        match self {
+            Self::PullRequest(outcome) => {
+                format!("PR #{} ({})", outcome.pr.number, outcome.method.name())
+            }
+            Self::Branch(outcome) => format!(
+                "branch {} into {} ({})",
+                record.branch,
+                outcome.base,
+                outcome.method.name()
+            ),
+        }
+    }
+
+    /// The PR's remote branch, for a cleanup run's row: `None` for a local land, whose remote
+    /// is never touched.
+    pub fn remote_left(&self) -> Option<bool> {
+        match self {
+            Self::PullRequest(outcome) => outcome.remote_branch_left,
+            Self::Branch(_) => None,
+        }
+    }
+
+    /// What became of the remote, when there is anything to say: a PR's branch GitHub left
+    /// behind, or a local land that never touched the remote.
+    pub fn note(&self, record: &Dispatch) -> Option<String> {
+        match self {
+            Self::PullRequest(outcome) => outcome.remote_note(record),
+            Self::Branch(_) => Some("not pushed".into()),
+        }
+    }
+
+    /// The land this merge made, for the dispatch record.
+    pub fn landed(&self) -> Option<crate::domain::Landed> {
+        match self {
+            Self::Branch(outcome) => Some(crate::domain::Landed {
+                tip: outcome.tip.clone(),
+                base_commit: outcome.base_commit.clone(),
+            }),
+            Self::PullRequest(_) => None,
+        }
+    }
+}
+
 /// Why a merge did not happen. Nothing was changed on GitHub, the task or the worktree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeError {
@@ -237,12 +304,15 @@ pub enum MergeError {
     /// `gh pr merge` succeeded, but GitHub does not show the PR merged (a merge queue, or
     /// auto-merge waiting on checks): its state now. Nothing local changes until it is.
     NotMergedYet(String),
+    /// A local land refused: the branch, the base, or the merge itself.
+    Land(super::land::LandError),
 }
 
 impl MergeError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Refused(refusal) => refusal.code(),
+            Self::Land(error) => error.code(),
             Self::BranchUnavailable
             | Self::HeadMismatch
             | Self::Failed(_)
@@ -253,6 +323,7 @@ impl MergeError {
     pub fn message(&self) -> String {
         match self {
             Self::Refused(refusal) => refusal.message(),
+            Self::Land(error) => error.message(),
             Self::BranchUnavailable => "branch no longer available".into(),
             Self::HeadMismatch => {
                 "pull request head is not the local branch tip; push or pull first".into()
@@ -388,7 +459,7 @@ pub fn probe(host: &mut impl DispatchHost, project: &Path, branch: &str) -> PrPr
 
 #[derive(Debug, Default)]
 struct MergeJobState {
-    results: Vec<Option<Result<MergeOutcome, MergeError>>>,
+    results: Vec<Option<Result<Merged, MergeError>>>,
     settled: bool,
 }
 
@@ -414,7 +485,7 @@ impl MergeJob {
         job
     }
 
-    pub fn finish(&self, index: usize, result: Result<MergeOutcome, MergeError>) {
+    pub fn finish(&self, index: usize, result: Result<Merged, MergeError>) {
         if let Ok(mut state) = self.0.lock() {
             if let Some(slot) = state.results.get_mut(index) {
                 *slot = Some(result);
@@ -429,7 +500,7 @@ impl MergeJob {
     }
 
     /// Every row's result once all landed; `None` while merges run or the worker holds the lock.
-    pub fn results(&self) -> Option<Vec<Result<MergeOutcome, MergeError>>> {
+    pub fn results(&self) -> Option<Vec<Result<Merged, MergeError>>> {
         let state = self.0.try_lock().ok()?;
         if !state.settled {
             return None;
@@ -438,7 +509,8 @@ impl MergeJob {
     }
 }
 
-/// Merge every row in order; one failure never stops the others.
+/// Merge every row in order, each the way its project lands: a pull request through `gh`, or
+/// the branch into its base. One failure never stops the others.
 pub fn run_merge_job(
     job: &MergeJob,
     rows: &[MergeRow],
@@ -446,9 +518,24 @@ pub fn run_merge_job(
     host: &mut impl DispatchHost,
 ) {
     for (index, row) in rows.iter().enumerate() {
-        job.finish(index, merge_row(host, row, method));
+        job.finish(index, merge_row_configured(host, row, method));
     }
     job.settle();
+}
+
+/// One row by its project's mode: the pull request through `gh`, or the local land.
+pub fn merge_row_configured(
+    host: &mut impl DispatchHost,
+    row: &MergeRow,
+    method: MergeMethod,
+) -> Result<Merged, MergeError> {
+    if row.pull_requests {
+        merge_row(host, row, method).map(Merged::PullRequest)
+    } else {
+        super::land::land_row(host, row, method)
+            .map(Merged::Branch)
+            .map_err(MergeError::Land)
+    }
 }
 
 // --- The real `gh` ----------------------------------------------------------------------
@@ -769,6 +856,7 @@ mod tests {
             session: "w1".into(),
             at: std::time::SystemTime::UNIX_EPOCH,
             cleaned: false,
+            landed: None,
         }
     }
 

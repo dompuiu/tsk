@@ -44,14 +44,14 @@ fn platform_nanos(nanos: u32) -> u32 {
 
 fn platform_current_fixture() -> Vec<u8> {
     #[cfg(not(windows))]
-    return include_bytes!("fixtures/current_store_v7.json").to_vec();
+    return include_bytes!("fixtures/current_store_v8.json").to_vec();
     #[cfg(windows)]
     {
         // Round-trip through the persisted type, not Value's sorted map. SystemTime applies
         // Windows' 100 ns precision while DomainState preserves the canonical field order.
         let state: DomainState =
-            serde_json::from_str(include_str!("fixtures/current_store_v7.json"))
-                .expect("v7 fixture");
+            serde_json::from_str(include_str!("fixtures/current_store_v8.json"))
+                .expect("v8 fixture");
         serde_json::to_vec_pretty(&state).expect("encode platform fixture")
     }
 }
@@ -346,51 +346,52 @@ fn literal_v5_fixture_migrates_to_canonical_current() {
     );
 }
 
-/// v7 is the current format: it opens with no migration, a task with no `due` key has no due
-/// day, it writes no version copy, and it saves byte for byte.
+/// v8 is the current format: it opens with no migration, a task with no `due` key has no due
+/// day and a dispatch with no recorded land reads as landed through a pull request, it writes
+/// no version copy, and it saves byte for byte.
 #[test]
-fn literal_v7_fixture_is_current_and_round_trips() {
+fn literal_v8_fixture_is_current_and_round_trips() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let current = platform_current_fixture();
-    fs::write(dir.join("tsk.json"), &current).expect("install current v7 fixture");
+    fs::write(dir.join("tsk.json"), &current).expect("install current v8 fixture");
     let store = TaskStore::new(&dir);
 
-    let loaded = store.load().expect("load current v7 fixture");
+    let loaded = store.load().expect("load current v8 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
     assert!(loaded.tasks().iter().all(|task| task.due.is_none()));
     store.save(&loaded).expect("save current state");
     assert!(
-        !dir.join("tsk.json.v7").exists(),
+        !dir.join("tsk.json.v8").exists(),
         "a current document needs no version copy"
     );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         current,
-        "a v7 state must serialize as canonical platform v7"
+        "a v8 state must serialize as canonical platform v8"
     );
 }
 
-/// A v7 store with an untitled archived project record opens as the current format with no
-/// version copy, and the archived project stays archived and untitled.
+/// A current store with an untitled archived project record keeps it archived and untitled
+/// through a save, with no version copy.
 #[test]
-fn a_v7_untitled_archived_project_stays_archived_and_untitled() {
+fn a_current_untitled_archived_project_stays_archived_and_untitled() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let mut document: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/current_store_v7.json")).expect("v7");
+        serde_json::from_str(include_str!("fixtures/current_store_v8.json")).expect("v8");
     document["projects"] = serde_json::json!({ "/tmp/example-project": { "archived": true } });
-    let v7 = serde_json::to_vec_pretty(&document).expect("encode v7");
-    fs::write(dir.join("tsk.json"), &v7).expect("install v7 fixture");
+    let current = serde_json::to_vec_pretty(&document).expect("encode current");
+    fs::write(dir.join("tsk.json"), &current).expect("install current fixture");
     let store = TaskStore::new(&dir);
 
-    let loaded = store.load().expect("load v7 fixture");
+    let loaded = store.load().expect("load current fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
     assert!(loaded.is_project_archived("/tmp/example-project"));
     assert_eq!(loaded.project_title("/tmp/example-project"), None);
     store.save(&loaded).expect("save migrated state");
     assert!(
-        !dir.join("tsk.json.v7").exists(),
+        !dir.join("tsk.json.v8").exists(),
         "a current document needs no copy"
     );
     let live: serde_json::Value =
@@ -400,6 +401,31 @@ fn a_v7_untitled_archived_project_stays_archived_and_untitled() {
         live["projects"],
         serde_json::json!({ "/tmp/example-project": { "archived": true } }),
         "an untitled record writes no title key"
+    );
+}
+
+/// A v7 store (a dispatch with no recorded land) migrates by its version alone: its first
+/// save writes v8 and keeps the original as `tsk.json.v7`.
+#[test]
+fn literal_v7_fixture_migrates_to_v8_and_keeps_its_copy() {
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let v7 = include_bytes!("fixtures/current_store_v7.json");
+    fs::write(dir.join("tsk.json"), v7).expect("install v7 fixture");
+    let store = TaskStore::new(&dir);
+
+    let loaded = store.load().expect("load v7 fixture");
+    assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
+    assert!(loaded
+        .tasks()
+        .iter()
+        .filter_map(|task| task.dispatch.as_ref())
+        .all(|dispatch| dispatch.landed.is_none()));
+    store.save(&loaded).expect("save migrated state");
+    assert_eq!(
+        fs::read(dir.join("tsk.json.v7")).expect("v7 copy"),
+        v7.as_slice(),
+        "the v7 original is backed up byte-identically"
     );
 }
 
@@ -468,7 +494,7 @@ fn literal_v6_fixture_migrates_to_canonical_current() {
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         platform_current_fixture(),
-        "a v6 state must serialize as canonical platform v7"
+        "a v6 state must serialize as canonical platform v8"
     );
     let reloaded = store.load().expect("reload");
     assert_eq!(
@@ -1312,7 +1338,7 @@ fn noncurrent_store_is_refused_without_rewriting_the_file() {
     let error = TaskStore::new(&dir)
         .save(&DomainState::new())
         .expect_err("current writer refuses noncurrent store");
-    assert!(error.to_string().contains("expected 7"));
+    assert!(error.to_string().contains("expected 8"));
     assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), bytes);
 }
 
@@ -2001,7 +2027,7 @@ fn a_concurrent_removal_keeps_the_other_writers_assignment_undo() {
 
 /// A v6 store with an agent and a person assignee, a hidden name, an `after` link, a review
 /// round with a sent reply, and a batch done on the undo stack migrates with no task change.
-/// Its first save writes v7, keeps the original as `tsk.json.v6`, and the batch still undoes
+/// Its first save writes v8, keeps the original as `tsk.json.v6`, and the batch still undoes
 /// as one.
 #[test]
 fn a_populated_v6_store_migrates_and_keeps_tsk_json_v6() {

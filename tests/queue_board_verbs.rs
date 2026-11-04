@@ -259,6 +259,8 @@ fn ctrl_g_is_retired_and_the_palette_lists_no_dispatch_before_a_launch() {
 fn cleanup_popup_maps_explicit_choices_and_paints_the_guardrail_state() {
     let (_, mut model, id) = board_with_task("clean me", HumanStatus::Started);
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        pull_requests: true,
+        base_state: None,
         merge_check: None,
         check_failed: false,
         pr: Default::default(),
@@ -357,6 +359,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
                 session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("dispatch first");
@@ -549,6 +552,7 @@ fn dispatched_board_for_merge_check(label: &str) -> (DomainState, BoardModel, uu
                 session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("dispatch");
@@ -766,6 +770,7 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
                 session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("dispatch");
@@ -840,6 +845,7 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
                     session: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
+                    landed: None,
                 },
             )
             .expect("dispatch");
@@ -908,6 +914,7 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
                 session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("dispatch");
@@ -978,6 +985,7 @@ fn successful_popup_cleanup_saves_completion_first_and_undo_reverses_only_status
                 session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("dispatch");
@@ -1080,6 +1088,7 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
                 session: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("record dispatch");
@@ -1130,6 +1139,7 @@ fn dispatched_task_page_hides_record_during_notes_edit_and_restores_it_in_view_m
                 session: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("record dispatch");
