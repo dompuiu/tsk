@@ -39,12 +39,15 @@ fn record(number: u64) -> Dispatch {
         session: "w1".into(),
         at: std::time::SystemTime::UNIX_EPOCH,
         cleaned: false,
+        landed: None,
     }
 }
 
 /// A clean, unmerged row whose PR lookup found nothing yet.
 fn row(number: u64) -> CleanupRow {
     CleanupRow {
+        pull_requests: true,
+        base_state: None,
         merge_check: None,
         check_failed: false,
         pr: CleanupPr {
@@ -561,6 +564,7 @@ fn h_the_finished_card_says_what_happened_and_reports_the_remote_branch_truthful
             identifier: "T7".into(),
             pr: "PR #193 (squash)".into(),
             remote_left,
+            not_pushed: false,
         });
         model.begin_cleanup_run(run);
         assert_says(
@@ -965,4 +969,135 @@ fn a_failed_merge_card_lays_out_like_every_other_card() {
         );
     }
     assert!(body(&failed, 110, 30).starts_with("Merge failed: Pull request o/r#189"));
+}
+
+/// A row whose project lands branches locally: `ahead` commits on top of `main`.
+fn local_row(number: u64, ahead: u64) -> CleanupRow {
+    let mut row = row(number);
+    row.pull_requests = false;
+    row.base = "main".into();
+    row.base_state = Some(tsk_tui::dispatch::BaseState {
+        base: Some("main".into()),
+        local: true,
+        ahead: Some(ahead),
+        ..tsk_tui::dispatch::BaseState::default()
+    });
+    row
+}
+
+#[test]
+fn i_a_local_branch_offers_the_land_bold_with_the_cursor_on_it() {
+    let model = single(local_row(7, 3));
+    assert_says(
+        &model,
+        &[
+            "3 commits ahead of main:",
+            "▸ m squash-merge branch to main · mark done · remove worktree, branch and agent pane",
+            "y don't merge · mark done · remove worktree and agent pane · keep the branch",
+            "n don't merge · mark done · keep everything",
+        ],
+    );
+    for width in WIDTHS {
+        assert!(bold_row(&model, width, "m  squash"), "{width}");
+        assert!(!bold_row(&model, width, "y  don't"), "{width}");
+        assert!(
+            !rows(&model, width, 40).join("\n").contains("PR #"),
+            "no pull request is mentioned in local mode"
+        );
+    }
+}
+
+#[test]
+fn the_land_verb_follows_the_merge_method() {
+    for (method, verb) in [
+        (MergeMethod::Merge, "m merge branch to main"),
+        (MergeMethod::Squash, "m squash-merge branch to main"),
+        (MergeMethod::Rebase, "m rebase branch onto main"),
+    ] {
+        let mut prompt = CleanupPrompt::single(local_row(7, 3));
+        prompt.method = method;
+        let domain = DomainState::new();
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.begin_cleanup_prompt(prompt);
+        assert!(body(&model, 110, 40).contains(verb), "{method:?}");
+    }
+}
+
+#[test]
+fn j_a_base_that_cannot_take_the_branch_offers_no_merge_and_says_why() {
+    for (blocker, state) in [
+        (
+            "main has uncommitted changes",
+            tsk_tui::dispatch::BaseState {
+                dirty: true,
+                ahead: Some(3),
+                ..tsk_tui::dispatch::BaseState::default()
+            },
+        ),
+        (
+            "main is checked out in another worktree",
+            tsk_tui::dispatch::BaseState {
+                checked_out_elsewhere: true,
+                ahead: Some(3),
+                ..tsk_tui::dispatch::BaseState::default()
+            },
+        ),
+        (
+            "main is behind the recorded base",
+            tsk_tui::dispatch::BaseState {
+                behind: true,
+                ahead: Some(3),
+                ..tsk_tui::dispatch::BaseState::default()
+            },
+        ),
+        (
+            "main already has every commit on the branch",
+            tsk_tui::dispatch::BaseState {
+                ahead: Some(0),
+                ..tsk_tui::dispatch::BaseState::default()
+            },
+        ),
+    ] {
+        let mut row = local_row(7, 3);
+        row.base_state = Some(tsk_tui::dispatch::BaseState {
+            base: Some("main".into()),
+            local: true,
+            ..state
+        });
+        let model = single(row);
+        assert_says(&model, &[&format!("Not merged into main · {blocker}")]);
+        assert!(
+            options(&model)
+                .iter()
+                .all(|(choice, _, _)| *choice != CleanupChoice::Merge),
+            "{blocker}: no m"
+        );
+    }
+
+    // No local base branch at all.
+    let mut row = local_row(7, 3);
+    row.base_state = Some(tsk_tui::dispatch::BaseState {
+        base: Some("main".into()),
+        ..tsk_tui::dispatch::BaseState::default()
+    });
+    assert_says(
+        &single(row),
+        &["Not merged into main · no local main branch"],
+    );
+}
+
+#[test]
+fn the_marked_set_card_names_each_branch_and_its_base() {
+    let model = bulk(vec![local_row(7, 3), local_row(9, 1)], &[]);
+    assert_says(
+        &model,
+        &[
+            "T7 3 commits ahead of main",
+            "T9 1 commit ahead of main",
+            "▸ m squash-merge T7's branch into main and T9's branch into main",
+            "y don't merge · mark all 2 done",
+            "n mark all 2 done · keep everything",
+        ],
+    );
+    assert!(bold_row(&model, 110, "m  squash"));
 }

@@ -108,6 +108,7 @@ fn selected_model(dispatched: bool) -> BoardModel {
                     session: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
+                    landed: None,
                 },
             )
             .expect("dispatch");

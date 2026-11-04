@@ -16,6 +16,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 - Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
 - Store format 17 records each dispatch's host and project titles: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
+- Store format 18 records a dispatch's local land: cleanup deletes the branch after a squash or rebase. Older tsk refuses it; roll back with `tsk.json.v17`.
 
 ### Added
 
@@ -24,6 +25,9 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
 - Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
+- `[workflow] pull_requests = false` lands work locally: agents commit without pushing, and `m` merges the branch into the base instead of a pull request.
+- A `[project."<path>"] pull_requests` override lands one repository locally while others keep pull requests.
+- `[merge] method` also shapes a local land: a merge commit, one squash commit, or the branch's commits replayed onto the base.
 
 ### Changed
 

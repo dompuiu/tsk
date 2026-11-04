@@ -11,12 +11,14 @@ use crate::agents::{AgentProfiles, MergeMethod, RenderContext};
 use crate::domain::{AgentHost, Dispatch, DomainState, HumanStatus, Task, TaskScope};
 
 mod host;
+pub mod land;
 pub mod pr;
 pub mod rex;
 
 pub use host::HostKind;
 use host::{herdr_worktree_directory, worktree_path};
 
+pub use land::{BaseState, LandError, LandOutcome, LandRequest};
 pub use pr::{MergeError, MergeOutcome, MergeRow, PrLookup, PrLookupError, PrProbe, PullRequest};
 
 /// Cleanup metadata queries (full untracked-file status, merge-base ancestry) read a real
@@ -203,6 +205,11 @@ pub enum BranchRetentionReason {
     /// GitHub merged the branch's PR into another branch than the recorded base; the
     /// cleanup result's `remote` names that branch.
     PrMergedIntoOtherBase,
+    /// The branch was landed locally, but its tip moved since: the commits that differ were
+    /// never landed.
+    LandedNewerCommits,
+    /// The base moved after the land: the branch is no longer provably landed, so it stays.
+    BaseMoved,
 }
 
 impl BranchRetentionReason {
@@ -219,7 +226,8 @@ impl BranchRetentionReason {
             Self::AncestryCheckTimedOut | Self::WorktreeListingTimedOut => "check timed out",
             Self::MergeCheckUnfinished => "merge unconfirmed",
             Self::RemoteUnreachable => "offline",
-            Self::PrMergedNewerCommits => "newer commits",
+            Self::PrMergedNewerCommits | Self::LandedNewerCommits => "newer commits",
+            Self::BaseMoved => "base moved",
             Self::PrMergedIntoOtherBase => "merged elsewhere",
         }
     }
@@ -253,6 +261,12 @@ impl BranchRetentionReason {
                 remote.unwrap_or("another branch"),
                 base.unwrap_or("the recorded base")
             ),
+            Self::LandedNewerCommits => {
+                "landed, but the branch has newer commits; delete by hand".into()
+            }
+            Self::BaseMoved => {
+                "the base moved after the land; branch retained".into()
+            }
         }
     }
 }
@@ -757,6 +771,27 @@ pub trait DispatchHost {
         _branch: &str,
     ) -> Result<bool, String> {
         Err("remote branch check is not supported".into())
+    }
+    /// `[workflow]` from `config.toml`: whether this project lands work as pull requests.
+    /// A host without configuration keeps the default, pull requests.
+    fn workflow(&mut self) -> crate::agents::WorkflowSettings {
+        crate::agents::WorkflowSettings::default()
+    }
+    /// The local base's state for a cleanup card: local refs only, never the network.
+    fn base_state(
+        &mut self,
+        _project: &Path,
+        _dispatch: &Dispatch,
+    ) -> Result<land::BaseState, String> {
+        Ok(land::BaseState::default())
+    }
+    /// Merge, squash, or rebase `request`'s branch into its local base. Never pushes.
+    fn land_branch(
+        &mut self,
+        _project: &Path,
+        _request: &land::LandRequest,
+    ) -> Result<land::LandOutcome, land::LandError> {
+        Err(land::LandError::Unsupported)
     }
     /// Wait between remote-branch checks after a merge. Only the real host sleeps.
     fn pause(&mut self, _duration: Duration) {}
@@ -1624,6 +1659,26 @@ impl DispatchHost for SystemDispatchHost {
         branch: &str,
     ) -> Result<bool, String> {
         pr::system_remote_branch_exists(project, remote, branch)
+    }
+
+    fn workflow(&mut self) -> crate::agents::WorkflowSettings {
+        crate::agents::WorkflowSettings::load(&self.state_dir)
+    }
+
+    fn base_state(
+        &mut self,
+        project: &Path,
+        dispatch: &Dispatch,
+    ) -> Result<land::BaseState, String> {
+        land::system_base_state(project, dispatch)
+    }
+
+    fn land_branch(
+        &mut self,
+        project: &Path,
+        request: &land::LandRequest,
+    ) -> Result<land::LandOutcome, land::LandError> {
+        land::system_land(project, request)
     }
 
     fn pause(&mut self, duration: Duration) {
@@ -2676,10 +2731,15 @@ pub fn clean_planned_with_host(
             host.remove_git_worktree(&preview.project, worktree)
                 .map_err(CleanupError::Host)?;
         }
-        let deletion = if preview.record.base_ref.is_none() {
+        let deletion = if preview.record.base_ref.is_none() && preview.record.landed.is_none() {
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
         } else if refs == CleanupRefs::Unconfirmed {
             BranchDeletion::Kept(BranchRetentionReason::MergeCheckUnfinished)
+        } else if let Some(landed) = preview.record.landed.as_ref() {
+            // The land is its own merge evidence: a squash or rebase leaves no ancestry, so
+            // the recorded land is the only confirmation there is.
+            land::landed_deletion(host, &preview.project, &preview.record, landed)
+                .map_err(CleanupError::Host)?
         } else if refs == CleanupRefs::Offline || preview.inspection.unreachable_remote.is_some() {
             BranchDeletion::Kept(BranchRetentionReason::RemoteUnreachable)
         } else if !preview.inspection.base_available {
@@ -2688,6 +2748,10 @@ pub fn clean_planned_with_host(
             let base = preview.record.base_ref.as_deref().expect("recorded base");
             host.delete_merged_branch(&preview.project, &preview.record.branch, base)
                 .map_err(CleanupError::Host)?
+        } else if !host.workflow().pull_requests(Some(&preview.project)) {
+            // No pull requests here: nothing may consult `gh`, and no ancestry confirms a
+            // squash or rebase land that was never recorded.
+            BranchDeletion::Kept(BranchRetentionReason::NotMerged)
         } else {
             let (deletion, into) = pr::pr_merged_deletion(host, &preview.project, &preview.record)
                 .map_err(CleanupError::Host)?;
@@ -3839,6 +3903,9 @@ pub struct EligibleDispatch {
     project: PathBuf,
     /// The `[project."<path>"]` settings for `project`, if `config.toml` has them.
     settings: Option<crate::agents::ProjectSettings>,
+    /// `[workflow] pull_requests` for `project`: whether the agent opens a pull request or
+    /// leaves its branch for tsk to merge.
+    pull_requests: bool,
     again: bool,
     /// The host the launch runs in, recorded on the dispatch.
     host: AgentHost,
@@ -4087,6 +4154,7 @@ fn check_inner(
     }
     let host = host_kind.agent_host().ok_or(DispatchError::NoHost)?;
     let settings = profiles.project(&project).cloned();
+    let pull_requests = profiles.pull_requests(Some(&project));
     Ok(EligibleDispatch {
         id,
         number,
@@ -4095,6 +4163,7 @@ fn check_inner(
         profile,
         project,
         settings,
+        pull_requests,
         again,
         host,
     })
@@ -4113,6 +4182,8 @@ pub struct PromptPreview {
     pub predicted: bool,
     /// A desk task: nothing dispatches it, and its worktree, branch, and base stay unfilled.
     pub desk: bool,
+    /// A setting that did not apply, such as a broken `[workflow]`: the default was used.
+    pub warning: Option<String>,
 }
 
 /// Render the launch the task's assignee would get, without launching or writing anything.
@@ -4195,6 +4266,7 @@ pub fn preview_prompt(
             worktree: &worktree,
             branch: &branch,
             base: &base,
+            pull_requests: profiles.pull_requests(project.as_deref()),
         },
         settings,
     );
@@ -4208,6 +4280,7 @@ pub fn preview_prompt(
         env_names,
         predicted: task.dispatch.is_none() && project.is_some(),
         desk: project.is_none(),
+        warning: profiles.workflow_error().map(str::to_string),
     })
 }
 
@@ -4420,6 +4493,7 @@ pub fn launch_with_host(
             worktree: &worktree,
             branch: &branch,
             base: &short_base,
+            pull_requests: eligible.pull_requests,
         },
         settings.as_ref(),
     );
@@ -4468,6 +4542,7 @@ pub fn launch_with_host(
         session: workspace_id,
         at: SystemTime::now(),
         cleaned: false,
+        landed: None,
     };
     let undo = LaunchUndo {
         project: project.to_path_buf(),
@@ -10457,12 +10532,14 @@ mod tests {
         MergeRow {
             task_id: id,
             number: task.number.expect("number"),
+            title: task.title.clone(),
             project: PathBuf::from("/tmp/project"),
             record: Dispatch {
                 base_ref: Some("refs/remotes/origin/main".into()),
                 base_remote: Some("origin".into()),
                 ..task.dispatch.clone().expect("dispatch")
             },
+            pull_requests: true,
         }
     }
 
@@ -10657,6 +10734,7 @@ mod tests {
                         session: "w9".into(),
                         at: SystemTime::now(),
                         cleaned: false,
+                        landed: None,
                     },
                 )
                 .expect("legacy dispatch");
@@ -10799,6 +10877,7 @@ mod tests {
             session: "w1".into(),
             at: SystemTime::now(),
             cleaned: false,
+            landed: None,
         };
         let value = serde_json::to_value(&record).unwrap();
         assert!(value.get("base").is_none());
@@ -11291,6 +11370,7 @@ mod tests {
             session: "w9".into(),
             at: SystemTime::now(),
             cleaned: false,
+            landed: None,
         };
         let inspect = || {
             SystemDispatchHost::in_state_dir(root.join("state"))
@@ -11384,6 +11464,7 @@ mod tests {
             session: "w9".into(),
             at: SystemTime::now(),
             cleaned: false,
+            landed: None,
         };
         let inspection = SystemDispatchHost::in_state_dir(root.join("state"))
             .inspect_cleanup(&project, &record, HostKind::Standalone)

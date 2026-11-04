@@ -652,6 +652,7 @@ mod start_tests {
                             session: "w0".into(),
                             at: std::time::SystemTime::now(),
                             cleaned: false,
+                            landed: None,
                         },
                     )
                     .expect("record");

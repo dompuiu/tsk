@@ -764,6 +764,8 @@ fn board_frame_paints_a_cleanup_verdict_that_landed_while_idle() {
     let mut model = BoardModel::from_domain(&domain, None);
     let check = MergeCheck::default();
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        pull_requests: true,
+        base_state: None,
         merge_check: Some(check.clone()),
         check_failed: false,
         pr: Default::default(),

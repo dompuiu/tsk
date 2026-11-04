@@ -4549,8 +4549,8 @@ fn paint_cleanup_card(
     } else {
         (
             card.title.bare.as_str(),
-            Some(CleanupCardLine::Text(card.title.question.clone()))
-                .filter(|_| !card.title.question.is_empty()),
+            (!card.title.question.is_empty())
+                .then(|| CleanupCardLine::Text(card.title.question.clone())),
         )
     };
     let wrap_width = usize::from(card_w.saturating_sub(2 + 2 * pad).max(1));

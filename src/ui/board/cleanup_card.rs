@@ -55,6 +55,8 @@ pub enum RowVerdict {
     Merged { pr: Option<u64> },
     /// An open pull request into the recorded base: `m` merges it.
     OpenPr { pr: u64 },
+    /// A branch the local base can take: `m` merges it. The commits ahead of the base.
+    LocalLand { ahead: Option<u64> },
     /// The background merged check is still running.
     CheckingMerge,
     /// GitHub merged the PR, but the branch stays: the whole sentence why.
@@ -111,6 +113,16 @@ impl CleanupRow {
                 .filter(|pr| pr.state == PrState::Merged)
                 .map(|pr| pr.number);
             return RowVerdict::Merged { pr };
+        }
+        if !self.pull_requests {
+            // No pull request anywhere: either the base can take the branch now, or it says
+            // why it cannot.
+            if self.landable() {
+                return RowVerdict::LocalLand {
+                    ahead: self.base_state.as_ref().and_then(|state| state.ahead),
+                };
+            }
+            return RowVerdict::NotMerged(self.land_blocker());
         }
         if let Some(pr) = self.open_pr() {
             return RowVerdict::OpenPr { pr };
@@ -237,6 +249,10 @@ impl CleanupRow {
             RowVerdict::Merged { pr: Some(pr) } => format!("PR #{pr} merged into {base} ✓"),
             RowVerdict::Merged { pr: None } => format!("Merged into {base} ✓"),
             RowVerdict::OpenPr { pr } => format!("PR #{pr} is still open:"),
+            RowVerdict::LocalLand { ahead } => match ahead {
+                Some(ahead) => format!("{}:", commits_ahead(ahead, &base)),
+                None => format!("Ready to merge into {base}:"),
+            },
             RowVerdict::CheckingMerge => format!("Checking merge into {base}…"),
             RowVerdict::MergedKept(text) => text,
             RowVerdict::Unconfirmed(reason) => {
@@ -259,6 +275,10 @@ impl CleanupRow {
             RowVerdict::Merged { pr: Some(pr) } => format!("PR #{pr} merged into {base} ✓"),
             RowVerdict::Merged { pr: None } => format!("merged into {base} ✓"),
             RowVerdict::OpenPr { pr } => format!("PR #{pr} is still open"),
+            RowVerdict::LocalLand { ahead } => match ahead {
+                Some(ahead) => commits_ahead(ahead, &base),
+                None => format!("ready to merge into {base}"),
+            },
             RowVerdict::MergedKept(text) => text,
             RowVerdict::Unconfirmed(reason) => format!("can't tell if merged: {reason}"),
             RowVerdict::NotMerged(Some(cause)) => format!("not merged · {cause}"),
@@ -279,12 +299,30 @@ impl CleanupRow {
     }
 }
 
+/// `3 commits ahead of main`.
+fn commits_ahead(ahead: u64, base: &str) -> String {
+    match ahead {
+        1 => format!("1 commit ahead of {base}"),
+        count => format!("{count} commits ahead of {base}"),
+    }
+}
+
 /// The `m` verb for the configured method.
 pub fn merge_verb(method: MergeMethod) -> &'static str {
     match method {
         MergeMethod::Merge => "merge",
         MergeMethod::Squash => "squash-merge",
         MergeMethod::Rebase => "rebase-merge",
+    }
+}
+
+/// The `m` line's first half in local mode: `merge branch to main`, `squash-merge branch to
+/// main`, `rebase branch onto main`.
+fn land_phrase(method: MergeMethod, base: &str) -> String {
+    match method {
+        MergeMethod::Merge => format!("merge branch to {base}"),
+        MergeMethod::Squash => format!("squash-merge branch to {base}"),
+        MergeMethod::Rebase => format!("rebase branch onto {base}"),
     }
 }
 
@@ -357,10 +395,18 @@ fn owned(one: bool, branch: bool, pane: bool, (single_pane, many_panes): PaneNou
     format!("{} {}", if one { "its" } else { "their" }, and_list(&items))
 }
 
+/// What `m` merges for one marked row: a pull request, or a branch into its base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MergeTarget {
+    PullRequest(u64),
+    /// The base the branch lands into.
+    Branch(String),
+}
+
 /// The marked set's rows sorted by what the options do to them.
 #[derive(Default)]
 struct Buckets {
-    open: Vec<(String, u64)>,
+    open: Vec<(String, MergeTarget)>,
     merged: Vec<String>,
     other: Vec<String>,
     dirty: Vec<String>,
@@ -453,6 +499,26 @@ impl CleanupPrompt {
                 ),
                 keep("don't merge · "),
             ],
+            RowVerdict::LocalLand { .. } => vec![
+                option(
+                    CleanupChoice::Merge,
+                    format!(
+                        "{} · mark done · {}",
+                        land_phrase(self.method, &row.base_name()),
+                        remove_list(true, pane, noun)
+                    ),
+                    true,
+                ),
+                option(
+                    CleanupChoice::Clean,
+                    format!(
+                        "don't merge · mark done · {} · keep the branch",
+                        remove_list(false, pane, noun)
+                    ),
+                    false,
+                ),
+                keep("don't merge · "),
+            ],
             RowVerdict::Merged { .. } => vec![
                 option(
                     CleanupChoice::Clean,
@@ -512,7 +578,13 @@ impl CleanupPrompt {
                 RowVerdict::CheckingPr | RowVerdict::CheckingMerge => buckets.checking = true,
                 RowVerdict::OpenPr { pr } => {
                     buckets.merged_pane |= pane;
-                    buckets.open.push((name, pr));
+                    buckets.open.push((name, MergeTarget::PullRequest(pr)));
+                }
+                RowVerdict::LocalLand { .. } => {
+                    buckets.merged_pane |= pane;
+                    buckets
+                        .open
+                        .push((name, MergeTarget::Branch(row.base_name())));
                 }
                 RowVerdict::Merged { .. } => {
                     buckets.merged_pane |= pane;
@@ -565,12 +637,15 @@ impl CleanupPrompt {
         let mut options = Vec::new();
         if !b.open.is_empty() {
             let prs = if b.open.len() > NAMED_TASKS {
-                format!("{} PRs", b.open.len())
+                format!("{} tasks' work", b.open.len())
             } else {
                 and_list(
                     &b.open
                         .iter()
-                        .map(|(name, pr)| format!("PR #{pr} ({name})"))
+                        .map(|(name, target)| match target {
+                            MergeTarget::PullRequest(pr) => format!("PR #{pr} ({name})"),
+                            MergeTarget::Branch(base) => format!("{name}'s branch into {base}"),
+                        })
                         .collect::<Vec<_>>(),
                 )
             };

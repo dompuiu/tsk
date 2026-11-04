@@ -40,7 +40,7 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 
 ## Configuration
 
-`config.toml` in the state directory holds agent profiles, project settings, the worktree location, the merge method, board defaults, and [backup targets](#settings).
+`config.toml` in the state directory holds agent profiles, project settings, how work lands, the worktree location, the merge method, board defaults, and [backup targets](#settings).
 
 - The first full board open writes a starter file when none exists. It lists every setting of that version with its options and default, and holds commented examples that take effect only when you uncomment them.
 - Quick capture, the CLI, and setup never create the file. tsk never replaces an existing file, even an empty one.
@@ -105,7 +105,37 @@ The prompt an agent gets is built in this order, with a blank line between parts
 2. The project's `prompt_append`, for a task in that project.
 3. The profile's `prompt_append`.
 
+With [`[workflow] pull_requests = false`](#how-work-lands), step 4 reads:
+
+```text
+4. Commit your work on {branch}. Never push, and never open or merge a pull request: tsk merges the branch into {base} when the task is done.
+```
+
+The other steps are the same in both modes. A profile's own `prompt` replaces the default whichever mode applies.
+
 [`tsk dispatch T12 --show-prompt`](/docs/cli/#dispatch) prints the result for one task without launching anything.
+
+### How work lands
+
+`[workflow] pull_requests` decides what a start does with the branch and what `m` on the [cleanup card](/docs/dispatch/#complete-and-clean-up) does with the work:
+
+```toml
+[workflow]
+pull_requests = true   # true (the default) or false
+```
+
+| Value | The agent | `m` and `--merge` |
+| --- | --- | --- |
+| `true` (the default) | Pushes and opens a pull request | Merges that pull request with the GitHub CLI (`gh`) |
+| `false` | Commits on its branch and never pushes | Merges the branch into the recorded base in your project clone |
+
+- A `[project."<path>"] pull_requests` overrides it for one repository.
+- Starting an assigned task is the same in both modes: it creates the worktree and branch and launches the agent.
+- Nothing is pushed in either mode by tsk itself, and tsk never merges a pull request in local mode.
+- Local mode never calls `gh`: no lookup, no merge, no GitHub wording on the card.
+- `[merge] method` chooses how both land.
+
+A local merge lands the branch in the local base the dispatch recorded, such as `main` for `origin/main`, and never commits, stashes, or checks anything out for you. Where it runs, what it refuses, and what the card says: [merge the branch locally](/docs/dispatch/#merge-the-branch-locally).
 
 ### Project settings
 
@@ -121,6 +151,7 @@ prompt_append = "Run `make check` before review."
 | --- | --- |
 | `review_on` | Who agents hand review to, the `{on}` placeholder. `you` (the default), an agent profile's name for that agent, or any other name, as [`--on`](/docs/cli/#status) reads it |
 | `prompt_append` | Text added after the prompt, before the profile's own `prompt_append` |
+| `pull_requests` | `true` (the default) or `false` for this repository only, overriding [`[workflow]`](#how-work-lands) |
 
 - The key is the repository's path. `~` is your home folder, and a trailing slash or a symlinked spelling of the same folder still matches.
 - When two keys name the same repository, the first one in the file wins.
@@ -152,12 +183,14 @@ worktrees = "~/code/worktrees"   # the default is worktrees in the state directo
 
 ### Merge method
 
-`m` on the [cleanup card](/docs/dispatch/#merge-the-pull-request), and `--merge` on [`tsk status … done`](/docs/cli/#status) and [`tsk clean`](/docs/cli/#clean), merge the task's pull request with the GitHub CLI. The `[merge]` table picks how:
+`m` on the [cleanup card](/docs/dispatch/#complete-and-clean-up), and `--merge` on [`tsk status … done`](/docs/cli/#status) and [`tsk clean`](/docs/cli/#clean), land the task's work: the pull request with `gh` by default, or the branch in your project clone with [`[workflow] pull_requests = false`](#how-work-lands). The `[merge]` table picks how:
 
 ```toml
 [merge]
 method = "squash"   # "merge" (the default), "squash", or "rebase"
 ```
+
+For a pull request, `method` is GitHub's merge method. For a local merge, it is the shape the base gets: a merge commit, one squash commit, or the branch's commits replayed onto the base.
 
 ### Board defaults
 
@@ -191,9 +224,10 @@ An unknown key or a bad value in one table never blocks the others. A file that 
 | Mistake | What happens |
 | --- | --- |
 | Unknown top-level key or table | Ignored, so a file written for a newer tsk still loads |
-| Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[dispatch]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
+| Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[dispatch]`, `[workflow]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
 | Broken profile or `[project."<path>"]` | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
 | Broken `[dispatch]`, or a `worktrees` folder that puts worktrees inside the project | Only dispatch and `--show-prompt` refuse, with `agent-config`. Cleanup still works |
+| Broken `[workflow]` | The default applies (pull requests) and the error is reported where the setting is used: the cleanup card says why, and the CLI refuses |
 | Broken `[merge]` | Only merging refuses: the cleanup card says why, and the CLI refuses with `merge-config` |
 | Broken `[board]` | The board opens at the default layout and shows the error on its status row. A bad `me` leaves the layout alone and names you `you` |
 | Broken `[[backup]]` | No backup runs. Every full board open shows `backup off:` and the error on its status row. `tsk backup`, `tsk backup list`, and `tsk restore` exit 1 with the error |

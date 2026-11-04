@@ -1653,7 +1653,7 @@ pub fn dispatch_help() -> CliOutput {
 pub fn clean_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(CLEAN_USAGE),
-        purpose: "Remove a dispatched task's worktree, and inside Herdr or Rex its workspace or tab, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
+        purpose: "Remove a dispatched task's worktree, and inside Herdr or Rex its workspace or tab, without changing its status. The branch is deleted only when it is merged into the recorded base: by Git ancestry, by gh for a pull request merged at the branch tip, or by the land tsk recorded.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -1661,7 +1661,7 @@ pub fn clean_help() -> CliOutput {
                 &[
                     (
                         "--merge",
-                        "first merge the task's pull request with gh, then set it done and clean",
+                        "first land the task's work (its pull request, or the branch when config.toml lands locally), then set it done and clean",
                     ),
                     ("--state-dir <dir>", "use another board store"),
                 ],
@@ -1678,6 +1678,9 @@ pub fn clean_help() -> CliOutput {
             "worktree-mismatch, other-host, host-failed".into(),
             "Windows: files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
             "--merge: gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
+            "local merge: branch-missing, base-missing, base-behind, base-dirty".into(),
+            "also base-checked-out, nothing-to-land, land-conflict".into(),
+            "and land-failed, workflow-config".into(),
         ],
         exit: format!(
             "{} (code store-error)",
@@ -1690,16 +1693,20 @@ pub fn clean_help() -> CliOutput {
     })
 }
 
-/// `--merge`'s first line: which PR merged and how, and a remote branch the merge left.
+/// `--merge`'s first line: what merged and how, and what became of the remote.
 pub fn merged(merged: &crate::cli::clean::Merged) -> String {
-    let outcome = &merged.outcome;
-    let mut line = format!(
-        "merged T{} pull request #{} ({})",
-        merged.number,
-        outcome.pr.number,
-        outcome.method.name()
-    );
-    if let Some(note) = outcome.remote_note(&merged.record) {
+    let method = merged.outcome.method();
+    let what = match &merged.outcome {
+        crate::dispatch::pr::Merged::PullRequest(outcome) => {
+            format!("pull request #{}", outcome.pr.number)
+        }
+        crate::dispatch::pr::Merged::Branch(outcome) => {
+            format!("branch {} into {}", merged.record.branch, outcome.base)
+        }
+    };
+    let note = merged.outcome.note(&merged.record);
+    let mut line = format!("merged T{} {what} ({})", merged.number, method.name());
+    if let Some(note) = note {
         line.push_str(&format!(" · {note}"));
     }
     format!("{}\n", terminal_text(&line))
@@ -1728,17 +1735,26 @@ pub fn merge_partial_json(
 }
 
 fn merge_json(merged: &crate::cli::clean::Merged) -> serde_json::Value {
-    let outcome = &merged.outcome;
-    serde_json::json!({
-        "pr": outcome.pr.number,
-        "url": outcome.pr.url,
-        "method": outcome.method.name(),
-        "remote_branch": match outcome.remote_branch_left {
-            Some(true) => Some("kept"),
-            Some(false) => Some("deleted"),
-            None => None,
-        },
-    })
+    match &merged.outcome {
+        crate::dispatch::pr::Merged::PullRequest(outcome) => serde_json::json!({
+            "kind": "pull_request",
+            "pr": outcome.pr.number,
+            "url": outcome.pr.url,
+            "method": outcome.method.name(),
+            "remote_branch": match outcome.remote_branch_left {
+                Some(true) => Some("kept"),
+                Some(false) => Some("deleted"),
+                None => None,
+            },
+        }),
+        crate::dispatch::pr::Merged::Branch(outcome) => serde_json::json!({
+            "kind": "branch",
+            "branch": merged.record.branch,
+            "base": outcome.base,
+            "method": outcome.method.name(),
+            "pushed": false,
+        }),
+    }
 }
 
 /// A `--merge` that merged nothing: exit 3 when the store failed, 1 otherwise.
@@ -1885,6 +1901,9 @@ pub fn prompt_preview(preview: PromptPreview) -> CliOutput {
     if preview.desk {
         stdout.push_str("desk task: a start only sets the status, so worktree, branch, and base stay unfilled\n");
     }
+    if let Some(warning) = &preview.warning {
+        stdout.push_str(&format!("warning: {}\n", terminal_text(warning)));
+    }
     stdout.push_str("prompt:\n");
     for line in prompt.split('\n') {
         stdout.push_str(&terminal_text(line));
@@ -1942,7 +1961,7 @@ pub fn status_help() -> CliOutput {
                     ("--clean", "then clean its dispatch, if it has a live one"),
                     (
                         "--merge",
-                        "first merge its pull request with gh, then set done and clean",
+                        "first land its work (its pull request, or the branch when config.toml lands locally), then set done and clean",
                     ),
                 ],
             ),
@@ -1994,6 +2013,9 @@ pub fn status_help() -> CliOutput {
             "started: after-not-done, agent-gone, other-host, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, host-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
             "done --clean: the clean codes except not-dispatched and already-cleaned".into(),
             "done --merge: the --clean codes, not-dispatched, already-cleaned, gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
+            "done --merge locally: branch-missing, base-missing, base-behind".into(),
+            "also base-dirty, base-checked-out, nothing-to-land, land-conflict".into(),
+            "and land-failed, workflow-config".into(),
         ],
         exit: exit_line(
             "status set, or it already had the value",

@@ -216,7 +216,7 @@ A task waits while any `after` entry has `done: false`.
 | --- | --- |
 | `notes` | Notes, or `null` |
 | `steps` | Each step's `id`, `done`, `short_id` (for [`tsk steps`](#steps)), and `text` |
-| `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `host` (`herdr` or `rex`), `session` (the Herdr workspace, or the Rex tab as `<session>/<window>`), `at`, and `cleaned: true` once cleaned. A Herdr dispatch also carries `herdr_workspace_id` |
+| `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `host` (`herdr` or `rex`), `session` (the Herdr workspace, or the Rex tab as `<session>/<window>`), `at`, `cleaned: true` once cleaned, and `landed` (`tip`, `base_commit`) after a [local merge](/docs/dispatch/#merge-the-branch-locally). A Herdr dispatch also carries `herdr_workspace_id` |
 | `past_blocks`, `past_reviews` | Closed blocks and rounds, oldest first. Each adds `closed_at` and `closed_by` |
 | `activity` | Every event on the task, newest first, below |
 
@@ -315,9 +315,14 @@ A launch that fails leaves the task unstarted. `ready` on a blocked task whose d
 | Flag | Meaning |
 | --- | --- |
 | `--clean` | After done, [clean](#clean) the task's dispatch. With none, it prints `nothing to clean`. A cleanup refusal exits 1 and leaves the task done |
-| `--merge` | First merge the task's pull request, then set done and clean |
+| `--merge` | First land the task's work, then set done and clean: merge its pull request, or its branch locally |
 
-`--merge` runs `gh pr merge` on the task's branch with the method set under `[merge]` in [`config.toml`](/docs/storage/#configuration). It never passes `--admin`, `--auto`, or `--delete-branch`, and it marks the task done only once GitHub shows the pull request merged. The first line names it: `merged T12 pull request #42 (squash)`. More in [merge the pull request](/docs/dispatch/#merge-the-pull-request).
+`--merge` lands the task's work the way its project does, from [`[workflow]` and `[merge]` in `config.toml`](/docs/storage/#how-work-lands).
+
+- **Pull requests (the default):** runs `gh pr merge` on the task's branch with the configured method. It never passes `--admin`, `--auto`, or `--delete-branch`, and it marks the task done only once GitHub shows the pull request merged. The first line names it: `merged T12 pull request #42 (squash)`.
+- **Locally (`pull_requests = false`):** merges the branch into the recorded base in your project clone, with the configured method, and never pushes. The first line names it: `merged T12 branch tsk/t12-fix-login-timeout into main (squash) · not pushed`.
+
+More in [merge the pull request](/docs/dispatch/#merge-the-pull-request) and [merge the branch locally](/docs/dispatch/#merge-the-branch-locally).
 
 | Refusal | When | Changed |
 | --- | --- | --- |
@@ -325,10 +330,17 @@ A launch that fails leaves the task unstarted. `ready` on a blocked task whose d
 | `gh-unavailable` | `gh` missing or not logged in, or no GitHub remote | Nothing |
 | `no-pr`, `pr-not-open` | No pull request for the branch, or it is not open | Nothing |
 | `pr-base-mismatch` | The pull request targets another branch than the dispatch base | Nothing |
+| `branch-missing` | Local mode: the task's branch is gone | Nothing |
+| `base-missing`, `base-behind` | Local mode: no local branch of the recorded base's name, or it lacks the commit the dispatch started from | Nothing |
+| `base-dirty`, `base-checked-out` | Local mode: the checkout holding the base has uncommitted work, or another worktree has it | Nothing |
+| `nothing-to-land` | Local mode: the base already has every commit on the branch | Nothing |
+| `land-conflict` | Local mode: the merge, squash, or rebase conflicts; it was aborted | Nothing |
+| `land-failed` | Local mode: git refused for another reason, such as a failed hook or a timeout | Nothing |
+| `workflow-config` | The `[workflow]` setting is invalid | Nothing |
 | `merge-config` | The `[merge]` setting is invalid | Nothing |
-| `merge-failed` | GitHub refused, the head is not the local branch tip, or a merge queue only accepted it | Nothing |
+| `merge-failed` | GitHub refused, the head is not the local branch tip, a merge queue only accepted it, or the local merge failed | Nothing |
 
-After a merge, a failure still exits non-zero: 3 when saving done failed, 1 for a cleanup refusal. If done was not saved, the pull request is merged and the task is not done: run `tsk status T12 done --clean`. A pull request that is already merged refuses `--merge` with `pr-not-open`; clean it with `tsk clean T12`.
+After a merge, a failure still exits non-zero: 3 when saving done failed, 1 for a cleanup refusal. If done was not saved, the work is landed and the task is not done: run `tsk status T12 done --clean`. A pull request that is already merged refuses `--merge` with `pr-not-open`; clean it with `tsk clean T12`.
 
 ```sh
 tsk status T12 done --merge
@@ -525,12 +537,12 @@ tsk clean <task> [--merge] [--json] [--state-dir <dir>]
 
 | Flag | Meaning |
 | --- | --- |
-| `--merge` | First merge the task's pull request, then set done and clean, as [`tsk status T12 done --merge`](#done) does |
+| `--merge` | First land the task's work, then set done and clean, as [`tsk status T12 done --merge`](#done) does |
 | `--json` | Print the result as one JSON object |
 
 - Uncommitted changes refuse with `dirty-worktree` and nothing is touched.
 - A dispatch made in the other host (Herdr or Rex) refuses with `other-host`. Clean it up from that host.
-- The branch is deleted only when it is merged into the recorded base. With `gh`, a pull request merged at the branch tip counts too. Otherwise the branch stays and the output says why.
+- The branch is deleted only when it is merged into the recorded base. With `gh`, a pull request merged at the branch tip counts too, and so does a branch tsk landed locally. Otherwise the branch stays and the output says why.
 - A worktree already gone counts as cleaned.
 - The task keeps its dispatch record, marked `cleaned`.
 - What counts as merged, and what stays: [complete and clean up](/docs/dispatch/#complete-and-clean-up).
@@ -544,7 +556,7 @@ Output is one line: `cleaned T12: worktree <path> (removed), branch <name> (kept
 | `branch` | `name`, `outcome` (`removed` or `kept`), and `reason` for a kept branch |
 | `workspace` | The dispatch's Herdr workspace or Rex tab: `id`, and `outcome`: `removed`, `kept`, or `missing` |
 | `warning` | A failed fetch, or a workspace the host would not close; `null` otherwise |
-| `merge` | With `--merge`: `pr`, `url`, `method`, and `remote_branch` (`kept`, `deleted`, or `null`) |
+| `merge` | With `--merge`: `kind` (`pull_request` or `branch`), `method`, and either `pr`, `url`, `remote_branch` (`kept`, `deleted`, or `null`) for a pull request, or `branch`, `base`, and `pushed` (`false`) for a local land |
 | `status` | With `--merge`: `done` |
 
 When a step after the merge fails, `--merge --json` prints `number`, `merge`, `status`, and `error`. `status` is `null` when done was not saved. `error` has `stage` (`done` or `cleanup`), `code`, and `message`.
@@ -805,7 +817,7 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `other-host`, `no-host`, `needs-git-project`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
-| `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `other-host`, `host-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
+| `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `other-host`, `host-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `base-missing`, `base-behind`, `base-dirty`, `base-checked-out`, `nothing-to-land`, `land-conflict`, `land-failed`, `merge-failed`, `merge-config`, `workflow-config` |
 | `archive`, `unarchive` | `unknown-task`, `soft-deleted-task` |
 | `project title` | `unknown-project`, `title-taken`, `invalid-title` |
 

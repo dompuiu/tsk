@@ -1407,6 +1407,11 @@ pub struct CleanupRow {
     pub unreachable_remote: Option<String>,
     /// The row's pull request, through `gh`, and what `m` did with it.
     pub pr: CleanupPr,
+    /// The project's `[workflow] pull_requests`: true merges the PR, false lands the branch.
+    pub pull_requests: bool,
+    /// The local base's state, read at card open in local mode: whether the branch can land,
+    /// and why not.
+    pub base_state: Option<crate::dispatch::BaseState>,
 }
 
 /// A cleanup row's pull request: the card's lookup, then `m`'s merge.
@@ -1416,10 +1421,11 @@ pub struct CleanupPr {
     pub probe: Option<crate::dispatch::PrProbe>,
     /// What the lookup found.
     pub landed: Option<crate::dispatch::pr::PrProbeResult>,
-    /// `m` merged this PR: the row's cleanup fetches the base itself rather than trusting the
-    /// card's pre-merge check, and gh's answer confirms a squash or rebase.
-    pub merged: Option<crate::dispatch::MergeOutcome>,
-    /// `m`'s merge failed: gh's reason, on one line. Nothing about the task changed.
+    /// `m` merged this task: the row's cleanup fetches the base itself rather than trusting
+    /// the card's pre-merge check, and gh's answer confirms a squash or rebase.
+    pub merged: Option<crate::dispatch::pr::Merged>,
+    /// `m`'s merge failed: gh's reason, or the land's, on one line. Nothing about the task
+    /// changed.
     pub merge_failed: Option<String>,
 }
 
@@ -1434,9 +1440,13 @@ impl CleanupRow {
         true
     }
 
-    /// `m` would merge this row: clean, not merged yet, with an open PR into the recorded base,
-    /// and no other worktree holding the branch (its cleanup would keep it).
+    /// `m` would merge this row: an open pull request into the recorded base, or a branch the
+    /// local base can take, and no other worktree holding the branch (its cleanup would keep
+    /// it).
     pub fn mergeable(&self) -> bool {
+        if !self.pull_requests {
+            return self.landable();
+        }
         !self.dirty
             && !self.checked_out_elsewhere
             && self.pr.merged.is_none()
@@ -1446,6 +1456,31 @@ impl CleanupRow {
                 }
                 _ => false,
             }
+    }
+
+    /// `m` lands this row's branch into the recorded base: local mode, clean, nothing landed
+    /// yet, and the base can take it.
+    pub fn landable(&self) -> bool {
+        !self.pull_requests
+            && !self.dirty
+            && !self.checked_out_elsewhere
+            && self.pr.merged.is_none()
+            && self
+                .base_state
+                .as_ref()
+                .is_some_and(crate::dispatch::BaseState::landable)
+    }
+
+    /// `m` merged or landed this row already.
+    pub fn merged_out(&self) -> bool {
+        self.pr.merged.is_some()
+    }
+
+    /// Why `m` cannot land this row, when its project lands branches locally.
+    pub fn land_blocker(&self) -> Option<String> {
+        self.base_state
+            .as_ref()
+            .and_then(crate::dispatch::BaseState::blocker)
     }
 
     /// GitHub merged this exact branch tip, though ancestry reads unmerged (a squash or rebase).
@@ -1539,7 +1574,7 @@ impl CleanupRow {
         !self.merge_unconfirmed()
             && self.unreachable_remote.is_none()
             && self.base_available
-            && (self.branch_merged || self.pr_merged_at_tip())
+            && (self.branch_merged || self.pr_merged_at_tip() || self.pr.merged.is_some())
     }
 
     /// The ref policy `y` cleans this row with: the card already refreshed the base off the
@@ -1547,8 +1582,13 @@ impl CleanupRow {
     /// the branch.
     pub fn cleanup_refs(&self) -> crate::dispatch::CleanupRefs {
         if self.pr.merged.is_some() {
-            // The base moved on GitHub after the card checked it: fetch it again.
-            crate::dispatch::CleanupRefs::Fetch
+            // A pull request merged on GitHub after the card checked it: fetch it again. A
+            // local land needs no network: its recorded evidence is local.
+            if self.pull_requests {
+                crate::dispatch::CleanupRefs::Fetch
+            } else {
+                crate::dispatch::CleanupRefs::Cached
+            }
         } else if self.merge_unconfirmed() {
             crate::dispatch::CleanupRefs::Unconfirmed
         } else if self.unreachable_remote.is_some() {
@@ -2008,20 +2048,25 @@ pub struct CleanupRun {
     pub workspaces: Vec<(String, Result<(), String>)>,
 }
 
-/// One pull request a cleanup card's `m` merged.
+/// One task a cleanup card's `m` merged or landed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedPr {
     /// `T12`.
     pub identifier: String,
-    /// `PR #7 (squash)`.
+    /// `PR #7 (squash)` or `branch tsk/t12 into main (squash)`.
     pub pr: String,
     /// Whether the PR's branch was still on the remote after the merge; `None`: unknown.
     pub remote_left: Option<bool>,
+    /// A local land: the remote was never touched.
+    pub not_pushed: bool,
 }
 
 impl MergedPr {
-    /// What became of the remote branch, when known. tsk never deletes it.
+    /// What became of the remote, when known. tsk never deletes a branch.
     pub fn remote_note(&self) -> Option<&'static str> {
+        if self.not_pushed {
+            return Some("not pushed");
+        }
         match self.remote_left {
             Some(true) => Some("remote branch kept"),
             Some(false) => Some("remote branch deleted by GitHub"),

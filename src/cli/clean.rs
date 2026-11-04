@@ -48,6 +48,8 @@ pub enum MergeRefused {
     Cleanup(CleanupError),
     /// `[merge]` in `config.toml` is invalid.
     Config(String),
+    /// `[workflow]` in `config.toml` is invalid.
+    Workflow(String),
     Merge(dispatch::MergeError),
 }
 
@@ -56,6 +58,7 @@ impl MergeRefused {
         match self {
             Self::Cleanup(error) => error.code(),
             Self::Config(_) => "merge-config",
+            Self::Workflow(_) => "workflow-config",
             Self::Merge(error) => error.code(),
         }
     }
@@ -63,7 +66,7 @@ impl MergeRefused {
     pub fn message(&self) -> String {
         match self {
             Self::Cleanup(error) => error.to_string(),
-            Self::Config(reason) => reason.clone(),
+            Self::Config(reason) | Self::Workflow(reason) => reason.clone(),
             Self::Merge(error) => error.message(),
         }
     }
@@ -73,15 +76,16 @@ impl MergeRefused {
     }
 }
 
-/// What `--merge` merged, for the result line and `--json`.
+/// What `--merge` merged or landed, for the result line and `--json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merged {
     pub number: u64,
     pub record: crate::domain::Dispatch,
-    pub outcome: dispatch::MergeOutcome,
+    pub outcome: dispatch::pr::Merged,
 }
 
-/// Merge the task's open pull request, before anything else: the done and the cleanup follow
+/// Land the task's work, the way its project lands: merge its open pull request, or merge its
+/// branch into the recorded base. Runs before anything else: the done and the cleanup follow
 /// only a merge that succeeded. Refuses a dispatch cleanup would refuse (none, cleaned, dirty).
 pub fn merge_with_host(
     target: TaskAddress,
@@ -90,7 +94,8 @@ pub fn merge_with_host(
     host: &mut impl DispatchHost,
 ) -> Result<Merged, MergeRefused> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
-    let state = TaskStore::new(&state_dir)
+    let store = TaskStore::new(&state_dir);
+    let mut state = store
         .load()
         .map_err(|error| MergeRefused::Cleanup(CleanupError::Store(error.to_string())))?;
     let id = state
@@ -106,13 +111,29 @@ pub fn merge_with_host(
     }
     let method = crate::agents::MergeMethod::load(&state_dir)
         .map_err(|error| MergeRefused::Config(error.to_string()))?;
+    // A broken `[workflow]` must not silently land one way or the other.
+    if let Some(error) = host.workflow().error() {
+        return Err(MergeRefused::Workflow(error.to_string()));
+    }
+    let pull_requests = host.workflow().pull_requests(Some(&preview.project));
     let row = dispatch::MergeRow {
         task_id: id,
         number: preview.number,
+        title: preview.title,
         project: preview.project,
         record: preview.record,
+        pull_requests,
     };
-    let outcome = dispatch::pr::merge_row(host, &row, method).map_err(MergeRefused::Merge)?;
+    let outcome =
+        dispatch::pr::merge_row_configured(host, &row, method).map_err(MergeRefused::Merge)?;
+    // A local land is recorded before the done saves, so the cleanup after it may delete a
+    // branch a squash or rebase left without ancestry.
+    if let Some(landed) = outcome.landed() {
+        store
+            .reload_merge_save_then(&mut state, |state| state.record_dispatch_landed(id, landed))
+            .map_err(|error| MergeRefused::Cleanup(CleanupError::Store(error.to_string())))?
+            .map_err(|error| MergeRefused::Cleanup(CleanupError::Store(error.to_string())))?;
+    }
     Ok(Merged {
         number: row.number,
         record: row.record,

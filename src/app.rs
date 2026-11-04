@@ -2275,7 +2275,14 @@ pub fn offer_cleanup_prompt_with_host(
     // Decide on the background check before the snapshot, as the base picker does: a fetch
     // that lands between the two then still has a check to fill the card, rather than a
     // fresh answer sitting over pre-fetch ancestry with nothing left to refresh it.
-    let merge_check = begin_cleanup_merge_check(task, record, host);
+    let project = task_project(domain, id);
+    let (pull_requests, base_state) = landing_for(project.clone(), record, host);
+    // A project that lands branches locally never asks the network anything.
+    let merge_check = if pull_requests {
+        begin_cleanup_merge_check(task, record, host)
+    } else {
+        None
+    };
     // Cached refs only: the card opens at once and the background check fills merged status.
     let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, host_kind, host)?;
     if !preview.inspection.worktree_exists {
@@ -2305,14 +2312,43 @@ pub fn offer_cleanup_prompt_with_host(
             close_workspace,
         });
     }
-    let pr_probe = begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
+    let pr_probe = if pull_requests {
+        begin_cleanup_pr_probe(project, &preview.record, host)
+    } else {
+        None
+    };
     model.begin_cleanup_prompt(CleanupPrompt::single(cleanup_row(
         id,
         preview,
         merge_check,
         pr_probe,
+        pull_requests,
+        base_state,
     )));
     Ok(CleanupOffer::Prompted)
+}
+
+/// Whether a project lands work as pull requests, and when it does not, the local base's
+/// state for the card. A desk task has no project: the default applies.
+fn landing_for(
+    project: Option<std::path::PathBuf>,
+    record: &crate::domain::Dispatch,
+    host: &mut impl DispatchHost,
+) -> (bool, Option<dispatch::BaseState>) {
+    let Some(project) = project else {
+        return (true, None);
+    };
+    if host.workflow().pull_requests(Some(&project)) {
+        return (true, None);
+    }
+    let state = match host.base_state(&project, record) {
+        Ok(state) => state,
+        Err(error) => crate::dispatch::BaseState {
+            error: Some(error),
+            ..crate::dispatch::BaseState::default()
+        },
+    };
+    (false, Some(state))
 }
 
 /// After a converged completion is saved, close the workspace its gone worktree left open,
@@ -2384,6 +2420,14 @@ fn begin_cleanup_merge_check(
     }
 }
 
+/// The task's title, the subject a squash land commits under.
+fn record_title(domain: &DomainState, id: uuid::Uuid) -> String {
+    domain
+        .get(id)
+        .map(|task| task.title.clone())
+        .unwrap_or_default()
+}
+
 /// The project a task lives in, for host work on its repository.
 fn task_project(domain: &DomainState, id: uuid::Uuid) -> Option<std::path::PathBuf> {
     match domain.get(id).map(|task| &task.scope) {
@@ -2406,9 +2450,13 @@ fn cleanup_row(
     preview: dispatch::CleanupPreview,
     merge_check: Option<dispatch::MergeCheck>,
     pr_probe: Option<dispatch::PrProbe>,
+    pull_requests: bool,
+    base_state: Option<dispatch::BaseState>,
 ) -> CleanupRow {
     let mut row = CleanupRow {
         merge_check,
+        pull_requests,
+        base_state,
         check_failed: false,
         pr: crate::ui::board::CleanupPr {
             probe: pr_probe,
@@ -2533,7 +2581,13 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         };
         // Check before the snapshot, as the single card does, so a fetch landing between the
         // two still has a check left to refresh the row.
-        let merge_check = begin_cleanup_merge_check(task, record, host);
+        let project = task_project(domain, id);
+        let (pull_requests, base_state) = landing_for(project.clone(), record, host);
+        let merge_check = if pull_requests {
+            begin_cleanup_merge_check(task, record, host)
+        } else {
+            None
+        };
         match dispatch::inspect_cleanup_cached_with_host(domain, id, host_kind, host) {
             Ok(preview) if !preview.inspection.worktree_exists => {
                 if host_kind.is_hosted() && preview.inspection.workspace_exists {
@@ -2543,9 +2597,19 @@ pub fn offer_bulk_cleanup_prompt_with_host(
                 bulk.missing.push((id, identifier, preview.record));
             }
             Ok(preview) => {
-                let pr_probe =
-                    begin_cleanup_pr_probe(task_project(domain, id), &preview.record, host);
-                rows.push(cleanup_row(id, preview, merge_check, pr_probe));
+                let pr_probe = if pull_requests {
+                    begin_cleanup_pr_probe(project, &preview.record, host)
+                } else {
+                    None
+                };
+                rows.push(cleanup_row(
+                    id,
+                    preview,
+                    merge_check,
+                    pr_probe,
+                    pull_requests,
+                    base_state,
+                ));
             }
             Err(error) => bulk.refused.push((id, identifier, error.reason())),
         }
@@ -2861,6 +2925,11 @@ fn begin_cleanup_merges(
     if !prompt.can_merge_any() {
         return;
     }
+    // A broken `[workflow]` would land work the wrong way, so it refuses like `[merge]` does.
+    if let Some(error) = host.workflow().error() {
+        prompt.merge_note = Some(error.to_string());
+        return;
+    }
     let method = match crate::agents::MergeMethod::load(store.path()) {
         Ok(method) => method,
         Err(error) => {
@@ -2880,8 +2949,10 @@ fn begin_cleanup_merges(
                 rows.push(dispatch::MergeRow {
                     task_id: row.task_id,
                     number: row.number,
+                    title: record_title(domain, row.task_id),
                     project,
                     record: record.clone(),
+                    pull_requests: row.pull_requests,
                 });
             }
             _ => row.pr.merge_failed = Some(CleanupError::DispatchChanged.reason()),
@@ -2960,12 +3031,41 @@ fn land_cleanup_merges_on(
         let identifier = format!("T{}", row.number);
         match result {
             Ok(outcome) => {
+                let not_pushed = matches!(outcome, dispatch::pr::Merged::Branch(_));
+                if outcome.landed().is_some()
+                    && !dispatch_unchanged(domain, *id, row.inspected.as_ref())
+                {
+                    row.pr.merge_failed = Some(CleanupError::DispatchChanged.reason());
+                    report
+                        .unmerged
+                        .push((identifier, CleanupError::DispatchChanged.reason()));
+                    continue;
+                }
+                if let Some(landed) = outcome.landed() {
+                    if let Err(error) = domain.record_dispatch_landed(*id, landed) {
+                        row.pr.merge_failed = Some(error.to_string());
+                        report
+                            .unmerged
+                            .push((identifier, format!("the land was not recorded: {error}")));
+                        continue;
+                    }
+                    // The cleanup plan compares the dispatch it inspects with the one on the
+                    // task: a land is a change to that record, so the row follows it.
+                    row.inspected = domain.get(*id).and_then(|task| task.dispatch.clone());
+                }
+                let phrase = row.inspected.as_ref().map_or_else(
+                    || outcome.method().name().to_string(),
+                    |r| outcome.phrase(r),
+                );
+                let remote_left = outcome.remote_left();
                 report.merged.push(crate::ui::board::MergedPr {
                     identifier,
-                    pr: format!("PR #{} ({})", outcome.pr.number, outcome.method.name()),
-                    remote_left: outcome.remote_branch_left,
+                    pr: phrase,
+                    remote_left,
+                    not_pushed,
                 });
-                // The run fetches the base itself; the card's pre-merge check is moot.
+                // The run no longer waits on a base check: a PR merged on GitHub, or a
+                // branch the card just landed.
                 row.merge_check = None;
                 row.pr.merged = Some(outcome);
                 merged.push(*id);
@@ -6624,6 +6724,8 @@ mod tests {
             .expect("right seat task");
         let row = CleanupRow {
             merge_check: None,
+            pull_requests: true,
+            base_state: None,
             check_failed: false,
             pr: crate::ui::board::CleanupPr::default(),
             unreachable_remote: None,
@@ -12843,6 +12945,7 @@ mod quick_assign_tests {
                     session: workspace.into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
+                    landed: None,
                 },
             )
             .expect("record earlier launch");
@@ -15663,6 +15766,7 @@ mod quick_assign_tests {
                     session: "w0".into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
+                    landed: None,
                 },
             )
             .expect("record the launch");
@@ -18470,6 +18574,7 @@ mod quick_assign_tests {
                 session: "w0".into(),
                 at: std::time::SystemTime::now(),
                 cleaned: false,
+                landed: None,
             }
         }
 
@@ -22118,6 +22223,7 @@ mod queued_cleanup_tests {
                     session: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
+                    landed: None,
                 },
             )
             .expect("dispatch");
@@ -23295,6 +23401,7 @@ mod bulk_cleanup_tests {
             session: format!("w-{label}"),
             at: SystemTime::now(),
             cleaned: false,
+            landed: None,
         }
     }
 
@@ -24682,6 +24789,7 @@ mod merge_cleanup_tests {
                             session: format!("w-{title}"),
                             at: SystemTime::now(),
                             cleaned: false,
+                            landed: None,
                         },
                     )
                     .expect("dispatch");

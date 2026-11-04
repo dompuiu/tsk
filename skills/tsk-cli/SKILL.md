@@ -121,13 +121,15 @@ Only when the user asks.
   blindly.
 - A `no launch: <reason>` line after a start means the task started but nothing launched (outside
   Herdr or Rex, or a desk task). Tell the user; do not retry.
-- **Clean up** after review and merge: `tsk clean T12`, or `tsk status T12 done --clean` when the
-  user also said the task is done. Never clean the worktree you run in. Uncommitted work refuses
-  with `dirty-worktree`. A kept branch comes with its reason (`branch.reason` in `--json`); deleting
-  it is the user's call.
-- **Merge** only when asked: `tsk status T12 done --merge` merges the task's pull request with `gh`,
-  then sets done and cleans. A refusal (`no-pr`, `pr-not-open`, `merge-failed`, …) changed nothing:
-  report gh's reason and never merge another way.
+- **Clean up** after review: `tsk clean T12`, or `tsk status T12 done --clean` when the user also
+  said the task is done. Never clean the worktree you run in. Uncommitted work refuses with
+  `dirty-worktree`. A kept branch comes with its reason (`branch.reason` in `--json`); deleting it
+  is the user's call.
+- **Land** only when asked: `tsk status T12 done --merge` lands the task's work the way its project
+  does, then sets done and cleans. `config.toml` decides: its pull request through `gh`, or, with
+  `[workflow] pull_requests = false`, its branch merged into the base in the project clone, never
+  pushed. A refusal changed nothing: report the reason (`no-pr`, `pr-not-open`, `base-dirty`,
+  `land-conflict`, `merge-failed`, …) and never land another way.
 
 ## Exit codes
 

@@ -66,7 +66,7 @@ same PR, never leave them apart.
 | `src/activity.rs` | paper trail entries for the task page and `tsk list T12` |
 | `src/backup.rs` | git backups and the versions `tsk restore` picks from |
 | `src/agents.rs` | `config.toml` profile loader, prompt/argv rendering, starter seed |
-| `src/dispatch.rs`, `src/dispatch/pr.rs` | dispatch and cleanup engine behind a `DispatchHost` seam (git, herdr, Rex, and `gh` calls), cleanup guardrails, pull request merge |
+| `src/dispatch.rs`, `src/dispatch/pr.rs`, `src/dispatch/land.rs` | dispatch and cleanup engine behind a `DispatchHost` seam (git, herdr, Rex, and `gh` calls), cleanup guardrails, pull request merge, local land |
 | `src/git_base.rs` | dispatch base branches, resolved in the task's repository |
 | `src/context.rs`, `src/scope.rs` | invocation context from Herdr and the cwd, project path resolution |
 | `src/save_recovery.rs` | retry or cancel of one failed save |
@@ -400,6 +400,11 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   (registered with git, matching the herdr entry's path, never the project root). It runs
   off the event loop after the completion is saved; quit waits for it. A missing worktree
   converges to `cleaned`. CLI `status done` never prompts.
+- `[workflow] pull_requests = false` lands the branch locally instead: no `gh` call anywhere,
+  a clean base checkout (or a throwaway worktree when no worktree holds it), every refusal
+  before the base moves, conflicts aborted, and never a push. The land is recorded on the
+  dispatch (`Dispatch::landed`) so a squash or rebase still lets cleanup delete the branch;
+  that field is store v18. The project root is touched only by that land, never by cleanup.
 - Every git and herdr call goes through the `DispatchHost` seam so tests use a fake host.
   Changes to the real host need a live herdr smoke against a throwaway repo under `/tmp`,
   never this one.

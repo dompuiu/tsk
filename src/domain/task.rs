@@ -137,6 +137,21 @@ pub struct Dispatch {
     /// available for inspection and a deliberate relaunch.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleaned: bool,
+    /// The branch was merged into the recorded base locally, without a pull request. Store
+    /// format v18; absent on older records and on every record dispatched from a pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed: Option<Landed>,
+}
+
+/// A local land of a dispatch's branch: enough to delete the branch later, whichever merge
+/// method ran. A squash or rebase leaves no ancestry, so the land itself is the evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Landed {
+    /// The branch tip that was landed.
+    pub tip: String,
+    /// The base's tip right after the land.
+    pub base_commit: String,
 }
 
 /// What a [`Dispatch`] reads from. A record from before store v16 has no `host` and keeps its
@@ -165,6 +180,8 @@ struct DispatchWire {
     at: SystemTime,
     #[serde(default)]
     cleaned: bool,
+    #[serde(default)]
+    landed: Option<Landed>,
 }
 
 impl From<DispatchWire> for Dispatch {
@@ -183,6 +200,7 @@ impl From<DispatchWire> for Dispatch {
             session: wire.session,
             at: wire.at,
             cleaned: wire.cleaned,
+            landed: wire.landed,
         }
     }
 }
@@ -636,7 +654,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 17;
+pub const STORE_FORMAT_VERSION: u32 = 18;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -2283,6 +2301,16 @@ impl DomainState {
         let at = task.updated_at;
         task.history
             .extend(kinds.map(|kind| event(kind, at, None, None)));
+        Ok(())
+    }
+
+    /// Record a local land on the task's dispatch, so a later cleanup may delete the branch
+    /// even when a squash or rebase left no ancestry. Host bookkeeping, like a cleanup: no
+    /// history event, and the caller saves it with whatever the land led to.
+    pub fn record_dispatch_landed(&mut self, id: Uuid, landed: Landed) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        let dispatch = task.dispatch.as_mut().ok_or(DomainError::UnknownId(id))?;
+        dispatch.landed = Some(landed);
         Ok(())
     }
 

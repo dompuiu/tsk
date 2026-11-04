@@ -200,13 +200,16 @@ this file names things.
   repository's remote default (`origin/HEAD`).
 - **cleanup**: removing a dispatch's worktree, Herdr workspace or Rex tab, and merged branch, offered
   when the task is completed. It never removes uncommitted work or a branch it cannot
-  confirm is merged, by Git ancestry or, through `gh`, a pull request merged at exactly the
-  branch tip.
-- **merge (a task's PR)**: `m` on the cleanup card, or `--merge` on `tsk status T12 done`
-  and `tsk clean T12`. Merges the task's open pull request through `gh` with the merge
-  method, then completes and cleans up. tsk finds the pull request by branch name, stores
-  nothing about it, and never deletes remote branches.
-- **merge method**: `[merge] method` in `config.toml`: `merge`, `squash`, or `rebase`.
+  confirm is merged, by Git ancestry, through `gh`, or by the land tsk recorded.
+- **merge (a task's work)**: `m` on the cleanup card, or `--merge` on `tsk status T12 done`
+  and `tsk clean T12`. Lands the task's work the way its project does, then completes and
+  cleans up. With pull requests, tsk finds the pull request by branch name through `gh` and
+  stores nothing about it; locally, it merges the branch into the recorded base in your
+  project clone. It never pushes and never deletes remote branches.
+- **land**: a local merge of a dispatch's branch into its base, without a pull request:
+  `[workflow] pull_requests = false` in `config.toml`. Not pushing is part of it.
+- **merge method**: `[merge] method` in `config.toml`: `merge`, `squash`, or `rebase`, for a
+  pull request or a local land.
 
 ## Store & backup
 

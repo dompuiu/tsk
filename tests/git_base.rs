@@ -246,6 +246,7 @@ fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branc
         session: "not-used".into(),
         at: std::time::SystemTime::now(),
         cleaned: false,
+        landed: None,
     };
     let mut host = SystemDispatchHost::in_state_dir(r.root.join("state"));
     let inspection = host
@@ -425,6 +426,7 @@ fn footer_default_cache_refreshes_after_dispatch_updates_origin_head() {
                 session: "not-opened".into(),
                 at: std::time::SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .unwrap();
@@ -618,7 +620,7 @@ fn dispatch_exact_base_ref_is_optional_and_round_trips() {
         "herdr_workspace_id": "unused", "at": [0, 0]
     });
     let mut dispatch: Dispatch = serde_json::from_value(old).unwrap();
-    assert_eq!(STORE_FORMAT_VERSION, 17);
+    assert_eq!(STORE_FORMAT_VERSION, 18);
     assert_eq!(dispatch.base_ref, None);
     assert!(serde_json::to_value(&dispatch)
         .unwrap()
@@ -699,6 +701,7 @@ fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
         session: "not-used".into(),
         at: std::time::SystemTime::now(),
         cleaned: false,
+        landed: None,
     };
     let mut host = SystemDispatchHost::in_state_dir(r.root.join("state"));
     let cached = host
@@ -800,6 +803,7 @@ fn a_background_merge_check_sees_a_remote_merge_the_cached_refs_miss() {
         session: "not-used".into(),
         at: std::time::SystemTime::now(),
         cleaned: false,
+        landed: None,
     };
     let mut host = SystemDispatchHost::in_state_dir(r.root.join("state"));
     assert!(

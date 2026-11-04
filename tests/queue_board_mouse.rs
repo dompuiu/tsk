@@ -3920,6 +3920,8 @@ fn peek_attribution_is_copyable_but_not_a_task_click_target() {
 
 fn cleanup_card(model: &mut BoardModel, id: uuid::Uuid, dirty: bool) {
     model.begin_cleanup_prompt(CleanupPrompt::single(CleanupRow {
+        pull_requests: true,
+        base_state: None,
         merge_check: None,
         check_failed: false,
         pr: Default::default(),

@@ -103,6 +103,9 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # =============================================================================
 
 # `tsk dispatch T12 --show-prompt` shows exactly what an agent gets.
+#
+# With `[workflow] pull_requests = false`, step 4 becomes: commit your work on
+# {branch}, never push, never open or merge a pull request.
 
 # =============================================================================
 # Examples using the default prompt
@@ -138,8 +141,9 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #
 # {steps}
 #
-# Keep the change small, commit on {branch}, open a pull request into {base},
-# then set the task to review with `tsk status {number} review --on {on}`.
+# Keep the change small and commit on {branch}. Land it the way this
+# project does (a pull request, or a local merge), then set the task to review
+# with `tsk status {number} review --on {on}`.
 # """
 
 # =============================================================================
@@ -175,13 +179,28 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #                  `tsk edit T12 --on you`.
 #   prompt_append  added after the prompt, before the profile's own
 #                  `prompt_append`
+#   pull_requests  whether agents open pull requests in this repository,
+#                  overriding [workflow]: true, or false to merge the branch
+#                  locally instead
 # [project."~/code/my-app"]
 # review_on = "coordinator"
 # prompt_append = "Run `make check` before review."
+# pull_requests = false
 
 # =============================================================================
 # Global config
 # =============================================================================
+
+# Whether agents open pull requests. With `pull_requests = true` (the default)
+# the agent is told to push and open one, and `m` on the cleanup card merges it
+# with the GitHub CLI (`gh`).
+#
+# With `pull_requests = false` the agent commits on its branch and never
+# pushes: `m` merges that branch into the task's base branch in your project
+# clone, and the remote stays untouched. `[merge] method` decides how.
+#   pull_requests  true (the default), or false
+# [workflow]
+# pull_requests = true
 
 # `m` on the cleanup card (or `tsk status T12 done --merge`) merges the task's
 # open pull request with the GitHub CLI (`gh`), then marks the task done and
@@ -344,12 +363,29 @@ pub const DEFAULT_PROMPT: &str = "You were dispatched to T{number} ({title}) in 
 7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
 8. Never set the task to done; the person who reviews it does.";
 
+/// The default prompt when `[workflow] pull_requests = false`: the agent commits on its own
+/// branch and tsk merges that branch locally, so nothing is pushed and no pull request is
+/// opened. Only step 4 differs from [`DEFAULT_PROMPT`]; a test pins the rest.
+pub const DEFAULT_LOCAL_PROMPT: &str = "You were dispatched to T{number} ({title}) in worktree {worktree} on branch {branch}, based on {base}.
+
+1. Run `tsk guide`, then `tsk list {number} --json`. The task notes are your brief.
+2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
+3. Work only on {branch}. Run the project's checks before saying you are done.
+4. Commit your work on {branch}. Never push, and never open or merge a pull request: tsk merges the branch into {base} when the task is done.
+5. Set the task to review with what you did and what to check: `tsk status {number} review --on {on} --done \"…\" --check \"…\"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a decision, block it with your question: `tsk status {number} blocked --on {on} --why \"…\"`, adding `--needs` and one `--option` per choice, then stop. If your notes name someone else to hand it to, use that name instead of {on}.
+6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
+7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
+8. Never set the task to done; the person who reviews it does.";
+
 /// All agent profiles loaded from one state directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentProfiles {
     profiles: BTreeMap<String, AgentProfile>,
     /// `[project."<path>"]` settings in file order; the first key naming a project wins.
     projects: Vec<(String, ProjectSettings)>,
+    /// `[workflow]` and its per-project overrides. Never an error by itself: a bad value
+    /// falls back to the default and is reported by [`Self::workflow_error`].
+    workflow: WorkflowSettings,
 }
 
 impl AgentProfiles {
@@ -375,12 +411,14 @@ impl AgentProfiles {
             None => Vec::new(),
             Some(item) => parse_projects(item)?,
         };
+        let workflow = WorkflowSettings::parse(content);
         // Other top-level keys are settings for other features, possibly from a newer
         // binary: ignore them so an older tsk still reads its profiles.
         let Some(agents) = document.get("agent") else {
             return Ok(Self {
                 profiles: BTreeMap::new(),
                 projects,
+                workflow,
             });
         };
         let agents = agents
@@ -397,7 +435,11 @@ impl AgentProfiles {
                 .ok_or_else(|| invalid_profile(name, "profile must be a [agent.<name>] table"))?;
             profiles.insert(name.to_string(), parse_profile(name, table)?);
         }
-        Ok(Self { profiles, projects })
+        Ok(Self {
+            profiles,
+            projects,
+            workflow,
+        })
     }
 
     /// Whether `content` parses as profiles (tests of other modules).
@@ -432,11 +474,19 @@ impl AgentProfiles {
     /// The `[project."<path>"]` settings for a task's repository. Keys expand `~` and compare
     /// like project paths do (canonically when both exist); the first match in the file wins.
     pub fn project(&self, path: &Path) -> Option<&ProjectSettings> {
-        let path = path.to_string_lossy();
-        self.projects
-            .iter()
-            .find(|(key, _)| crate::scope::paths_equivalent(&crate::scope::expand_home(key), &path))
-            .map(|(_, settings)| settings)
+        project_entry(&self.projects, path)
+    }
+
+    /// Whether agents open and merge pull requests for this repository: `[workflow]
+    /// pull_requests`, with a `[project."<path>"]` override. A missing or unusable setting
+    /// keeps the default, pull requests.
+    pub fn pull_requests(&self, project: Option<&Path>) -> bool {
+        self.workflow.pull_requests(project)
+    }
+
+    /// Why `[workflow]` was not used, for the surface that asked. The default applies.
+    pub fn workflow_error(&self) -> Option<&str> {
+        self.workflow.error()
     }
 
     /// Read a typed assignee by the name rule against these profiles: you, a profile (an
@@ -451,6 +501,16 @@ impl AgentProfiles {
     pub fn resolve_on(&self, input: &str, kind: BlockKind) -> BlockOn {
         resolve_on(input, kind, |name| self.profiles.contains_key(name))
     }
+}
+
+/// The `[project."<path>"]` entry naming `path`: keys expand `~` and compare like project paths
+/// do (canonically when both exist), and the first match in file order wins.
+fn project_entry<'a, T>(entries: &'a [(String, T)], path: &Path) -> Option<&'a T> {
+    let path = path.to_string_lossy();
+    entries
+        .iter()
+        .find(|(key, _)| crate::scope::paths_equivalent(&crate::scope::expand_home(key), &path))
+        .map(|(_, value)| value)
 }
 
 /// `[board] me` in `config.toml`: the name your handle shows instead of `you`. It never names
@@ -555,7 +615,11 @@ impl AgentProfile {
     ) -> RenderedLaunch {
         let on = project.map_or(crate::domain::OWNER, ProjectSettings::on);
         let template = [
-            Some(self.prompt.as_deref().unwrap_or(DEFAULT_PROMPT)),
+            Some(self.prompt.as_deref().unwrap_or(if context.pull_requests {
+                DEFAULT_PROMPT
+            } else {
+                DEFAULT_LOCAL_PROMPT
+            })),
             project.and_then(|project| project.prompt_append.as_deref()),
             self.prompt_append.as_deref(),
         ]
@@ -589,6 +653,8 @@ pub struct RenderContext<'a> {
     pub worktree: &'a str,
     pub branch: &'a str,
     pub base: &'a str,
+    /// Whether the project lands work as pull requests, which decides the default prompt.
+    pub pull_requests: bool,
 }
 
 /// Fully substituted values ready for a launcher.
@@ -854,6 +920,124 @@ impl MergeMethod {
             ))),
             Some(None) => Err(invalid("method must be a string".into())),
         }
+    }
+}
+
+/// Whether agents land work as pull requests or as a local merge of their branch:
+/// `[workflow] pull_requests` in `config.toml`, with a `[project."<path>"]` override.
+///
+/// The default is pull requests. This table never fails a load: an unknown key or a bad value
+/// leaves the default in place and fills [`Self::error`], for the surface that uses the
+/// setting to refuse and say why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowSettings {
+    /// The global `pull_requests`, `None` until the file sets it.
+    pull_requests: Option<bool>,
+    /// `[project."<path>"]` overrides in file order; the first key matching a project wins.
+    projects: Vec<(String, Option<bool>)>,
+    /// Why the table was not used; the default applies.
+    error: Option<String>,
+}
+
+impl WorkflowSettings {
+    /// Read `[workflow]` from `<state_dir>/config.toml`. A missing file, table, or key is the
+    /// default; a bad value is reported, never fatal.
+    pub fn load(state_dir: impl AsRef<Path>) -> Self {
+        let path = state_dir.as_ref().join(CONFIG_FILE);
+        match fs::read_to_string(&path) {
+            Ok(content) => Self::parse(&content),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Self::default(),
+            Err(source) => Self {
+                error: Some(AgentLoadError::Io { path, source }.to_string()),
+                ..Self::default()
+            },
+        }
+    }
+
+    /// Whether agents open and merge pull requests for `project`: its override, then the
+    /// global setting, then the default (`true`).
+    pub fn pull_requests(&self, project: Option<&Path>) -> bool {
+        project
+            .and_then(|project| project_entry(&self.projects, project).copied().flatten())
+            .or(self.pull_requests)
+            .unwrap_or(true)
+    }
+
+    /// Why the table was not used.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub(crate) fn parse(content: &str) -> Self {
+        let mut settings = Self::default();
+        let Ok(document) = content.parse::<DocumentMut>() else {
+            // A malformed file is AgentProfiles' error to report; this loader keeps the
+            // default mode so nothing behaves as if pull requests were turned off.
+            return settings;
+        };
+        let refuse = |settings: &mut Self, message: String| {
+            *settings = Self {
+                error: Some(message),
+                ..Self::default()
+            };
+        };
+        if let Some(workflow) = document.get("workflow") {
+            let Some(table) = workflow.as_table_like() else {
+                refuse(
+                    &mut settings,
+                    "config.toml: [workflow] must be a table".into(),
+                );
+                return settings;
+            };
+            if let Some(key) = table
+                .iter()
+                .map(|(key, _)| key)
+                .find(|key| *key != "pull_requests")
+            {
+                refuse(
+                    &mut settings,
+                    format!("config.toml: [workflow] unknown key {key:?}"),
+                );
+                return settings;
+            }
+            match table.get("pull_requests").map(|item| item.as_bool()) {
+                None => {}
+                Some(Some(value)) => settings.pull_requests = Some(value),
+                Some(None) => {
+                    refuse(
+                        &mut settings,
+                        "config.toml: [workflow] pull_requests must be true or false".into(),
+                    );
+                    return settings;
+                }
+            }
+        }
+        // Project overrides are read on their own, so a bad `review_on` or `prompt_append`
+        // in the same table cannot stop this setting from working.
+        if let Some(projects) = document
+            .get("project")
+            .and_then(|item| item.as_table_like())
+        {
+            for (path, item) in projects.iter() {
+                let Some(table) = item.as_table_like() else {
+                    continue;
+                };
+                match table.get("pull_requests").map(|item| item.as_bool()) {
+                    None => {}
+                    Some(Some(value)) => settings.projects.push((path.to_string(), Some(value))),
+                    Some(None) => {
+                        refuse(
+                            &mut settings,
+                            format!(
+                                "config.toml: project {path:?}: pull_requests must be true or false"
+                            ),
+                        );
+                        return settings;
+                    }
+                }
+            }
+        }
+        settings
     }
 }
 
@@ -1189,7 +1373,7 @@ fn parse_projects(
             if let Some(key) = table
                 .iter()
                 .map(|(key, _)| key)
-                .find(|key| !matches!(*key, "review_on" | "prompt_append"))
+                .find(|key| !matches!(*key, "review_on" | "prompt_append" | "pull_requests"))
             {
                 return Err(refuse(&format!("unknown key {key:?}")));
             }
@@ -1355,6 +1539,7 @@ mod tests {
             worktree: "/tmp/tsk-t101",
             branch: "tsk/t101-load-profiles",
             base: "dispatch",
+            pull_requests: true,
         }
     }
 
@@ -1605,6 +1790,147 @@ command = ["pi"]
                 .expect("me never breaks the layout")
                 .group,
             GroupBy::Thread
+        );
+    }
+
+    #[test]
+    fn starter_workflow_example_holds_the_default_once_uncommented() {
+        let uncommented = STARTER_CONFIG
+            .replace("# [workflow]\n", "[workflow]\n")
+            .replace("# pull_requests = ", "pull_requests = ");
+        assert!(uncommented.contains("[workflow]\npull_requests = "));
+        let settings = WorkflowSettings::parse(&uncommented);
+        assert_eq!(settings.error(), None);
+        assert!(
+            settings.pull_requests(None),
+            "the example holds the default"
+        );
+    }
+
+    #[test]
+    fn workflow_pull_requests_defaults_to_true_and_reads_each_value() {
+        let dir = TempDir::new("workflow-pull-requests");
+        let settings = WorkflowSettings::load(dir.path());
+        assert_eq!(settings.error(), None);
+        assert!(settings.pull_requests(None));
+
+        dir.write("[workflow]\npull_requests = false\n");
+        let settings = WorkflowSettings::load(dir.path());
+        assert_eq!(settings.error(), None);
+        assert!(!settings.pull_requests(None));
+        assert!(!settings.pull_requests(Some(Path::new("/repos/other"))));
+
+        let profiles = AgentProfiles::load(dir.path()).expect("profiles load");
+        assert!(!profiles.pull_requests(Some(Path::new("/repos/app"))));
+        assert_eq!(profiles.workflow_error(), None);
+    }
+
+    #[test]
+    fn a_project_pull_requests_override_beats_the_global_setting() {
+        let dir = TempDir::new("workflow-project-override");
+        dir.write(
+            "[workflow]\npull_requests = false\n\n\
+             [project.\"/repos/app\"]\npull_requests = true\n\n\
+             [project.\"/repos/quiet\"]\nreview_on = \"lead\"\n",
+        );
+
+        let profiles = AgentProfiles::load(dir.path()).expect("profiles load");
+        assert_eq!(profiles.workflow_error(), None);
+        assert!(profiles.pull_requests(Some(Path::new("/repos/app"))));
+        assert!(!profiles.pull_requests(Some(Path::new("/repos/quiet"))));
+        assert!(!profiles.pull_requests(Some(Path::new("/repos/other"))));
+        assert!(!profiles.pull_requests(None));
+    }
+
+    #[test]
+    fn a_bad_or_unknown_workflow_setting_keeps_the_default_and_says_why() {
+        let dir = TempDir::new("workflow-errors");
+        dir.write("[workflow]\npull_requests = \"yes\"\n");
+        let settings = WorkflowSettings::load(dir.path());
+        assert!(settings.pull_requests(None), "the default applies");
+        assert_eq!(
+            settings.error(),
+            Some("config.toml: [workflow] pull_requests must be true or false")
+        );
+        let profiles = AgentProfiles::load(dir.path()).expect("a bad workflow is not fatal");
+        assert!(profiles.pull_requests(None));
+        assert!(profiles.workflow_error().is_some());
+
+        dir.write("[workflow]\nmerge = false\n");
+        assert_eq!(
+            WorkflowSettings::load(dir.path()).error(),
+            Some("config.toml: [workflow] unknown key \"merge\"")
+        );
+
+        dir.write("[project.\"/repos/app\"]\npull_requests = 1\n");
+        assert_eq!(
+            WorkflowSettings::load(dir.path()).error(),
+            Some("config.toml: project \"/repos/app\": pull_requests must be true or false")
+        );
+    }
+
+    #[test]
+    fn the_local_default_prompt_changes_only_step_four() {
+        let pull_request = DEFAULT_PROMPT.lines().collect::<Vec<_>>();
+        let local = DEFAULT_LOCAL_PROMPT.lines().collect::<Vec<_>>();
+        assert_eq!(pull_request.len(), local.len());
+        let differing = pull_request
+            .iter()
+            .zip(&local)
+            .filter(|(pull_request, local)| pull_request != local)
+            .collect::<Vec<_>>();
+        assert_eq!(differing.len(), 1, "only the landing step differs");
+        assert_eq!(
+            *differing[0].0,
+            "4. Push and open a pull request into {base}. Never merge it."
+        );
+        assert_eq!(
+            *differing[0].1,
+            "4. Commit your work on {branch}. Never push, and never open or merge a pull \
+             request: tsk merges the branch into {base} when the task is done."
+        );
+    }
+
+    #[test]
+    fn the_prompt_follows_the_workflow_setting() {
+        let profile = AgentProfile {
+            command: vec!["pi".into()],
+            prompt: None,
+            prompt_append: None,
+            env: BTreeMap::new(),
+        };
+        let pull_request = profile.render(&context(), None);
+        let local = profile.render(
+            &RenderContext {
+                pull_requests: false,
+                ..context()
+            },
+            None,
+        );
+        let prompt = |rendered: &RenderedLaunch| rendered.argv.last().cloned().unwrap_or_default();
+        assert!(prompt(&pull_request).contains("Push and open a pull request into dispatch"));
+        assert!(!prompt(&pull_request).contains("Commit your work on tsk/t101"));
+        assert!(prompt(&local).contains("Commit your work on tsk/t101-load-profiles"));
+        assert!(prompt(&local).contains("tsk merges the branch into dispatch"));
+        assert!(!prompt(&local).contains("Push and open a pull request"));
+
+        // A profile's own prompt always wins, whichever mode the project lands in.
+        let own = AgentProfile {
+            prompt: Some("Work on {title}".into()),
+            ..profile
+        };
+        assert_eq!(
+            own.render(
+                &RenderContext {
+                    pull_requests: false,
+                    ..context()
+                },
+                None
+            )
+            .argv
+            .last()
+            .map(String::as_str),
+            Some("Work on Load profiles")
         );
     }
 
@@ -2349,6 +2675,7 @@ then set review again.
             "prompt_append = ",
             "[agent.<name>.env]",
             "review_on ",
+            "pull_requests ",
             "method ",
             "group ",
             "sort ",

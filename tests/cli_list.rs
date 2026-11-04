@@ -1838,6 +1838,7 @@ fn direct_json_includes_the_full_existing_dispatch_base_and_commit() {
                 session: "workspace-1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("record dispatch");

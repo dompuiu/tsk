@@ -34,8 +34,10 @@ Define your agents once in `config.toml`, press `@` to assign a task, and press
 worktree and a Herdr workspace or Rex tab for the task and launches the agent
 there. `ctrl+d` marks the task done; on a live dispatch it offers the cleanup card.
 Cleanup closes the workspace or tab and removes the worktree, and deletes the branch
-only when it is merged. It never touches uncommitted changes. Dispatch runs in Herdr or
-Rex; on Windows it is a preview. [Dispatch](https://gettsk.sh/docs/dispatch/).
+only when it is merged. It never touches uncommitted changes. By default the agent opens a
+pull request and cleanup merges it with `gh`; set `[workflow] pull_requests = false` and
+cleanup merges the branch into your base branch instead, without pushing. Dispatch runs in
+Herdr or Rex; on Windows it is a preview. [Dispatch](https://gettsk.sh/docs/dispatch/).
 
 ## Quickstart
 
@@ -81,7 +83,7 @@ board and `alt+a` to quick capture. [Rex setup](https://gettsk.sh/docs/install/#
 
 Two skills: `tsk-cli` teaches your agent to read the board, add tasks, and update
 their status and steps. `tsk-coordinator` lets it brief builder agents, review their
-pull requests, and report back on the board:
+work, and report back on the board:
 
 ```sh
 tsk setup

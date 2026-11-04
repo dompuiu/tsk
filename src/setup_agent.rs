@@ -1309,7 +1309,7 @@ mod tests {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         assert_eq!(
-            hash, 0xba8f_da3e_2628_2a99,
+            hash, 0x0324_4ea2_0cad_eeb3,
             "skills/tsk-cli/SKILL.md changed: refresh this hash pin, and bump `version:` only if this is the first skill edit since the last release"
         );
     }
@@ -1334,7 +1334,7 @@ mod tests {
         assert!(COORDINATOR_MD.contains("\nname: tsk-coordinator\n"));
         assert_eq!(
             fnv1a(COORDINATOR_MD),
-            0xac3b_5196_dd50_f2ad,
+            0x5601_7386_5738_b404,
             "skills/tsk-coordinator/SKILL.md changed: refresh this hash pin, and bump both skills' `version:` only if this is the first skill edit since the last release"
         );
     }

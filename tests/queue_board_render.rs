@@ -1636,6 +1636,7 @@ fn dispatched_started_task_uses_the_bullseye_glyph_on_rows_peek_and_page_only_wh
         session: "workspace-70".into(),
         at: at_secs_ago(30),
         cleaned: false,
+        landed: None,
     });
     let mut model = BoardModel::from_tasks(vec![dispatched.clone()], None);
     let board = board_rows(&model, 80, 24).join("\n");
@@ -1710,6 +1711,7 @@ fn task_page_shows_default_base_and_recorded_dispatch_origin() {
                 session: "workspace-details".into(),
                 at: at_secs_ago(30),
                 cleaned: false,
+                landed: None,
             },
         )
         .expect("dispatch");
@@ -6940,6 +6942,7 @@ fn overview_assignee_view_lists_assigned_work_across_projects_with_the_bullseye(
                     session: "workspace-1".into(),
                     at: at_secs_ago(30),
                     cleaned: false,
+                    landed: None,
                 });
             }
             // Blocked on /repos/herdr, the desk, and a done task.
