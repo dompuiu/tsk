@@ -26,6 +26,7 @@ mod cli_due;
 mod cli_edit;
 mod cli_guide;
 mod cli_help;
+mod cli_migrate;
 mod cli_router_process;
 mod cli_status;
 mod cli_steps;

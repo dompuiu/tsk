@@ -15,12 +15,14 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 ### Breaking
 
 - Store format 8 records a dispatch's local land: cleanup deletes the branch after a squash or rebase. Older tsk refuses it; roll back with `tsk.json.v7`.
+- Tasks move to `$XDG_DATA_HOME/tsk` and `config.toml` to `$XDG_CONFIG_HOME/tsk`; a store in `~/.tsk` keeps working until `tsk migrate` moves it.
 
 ### Added
 
 - `[workflow] pull_requests = false` lands work locally: agents commit without pushing, and `m` merges the branch into the base instead of a pull request.
 - A `[project."<path>"] pull_requests` override lands one repository locally while others keep pull requests.
 - `[merge] method` also shapes a local land: a merge commit, one squash commit, or the branch's commits replayed onto the base.
+- `tsk migrate` moves a store still in `~/.tsk` to the XDG data and settings directories.
 
 ### Fixed
 

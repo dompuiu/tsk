@@ -164,7 +164,7 @@ impl Target {
     }
 }
 
-/// Read the `[[backup]]` entries of `<state_dir>/config.toml`. A missing file or table is no
+/// Read the `[[backup]]` entries of the settings file. A missing file or table is no
 /// targets. Only this table is validated, so a broken profile never blocks backups.
 pub fn load_targets(state_dir: &Path) -> Result<Vec<Target>, String> {
     match crate::agents::read_config(state_dir) {
@@ -917,7 +917,7 @@ pub fn run(state_dir: &Path, mode: RunMode, now: SystemTime) -> Result<Vec<Targe
     let invalid = crate::store::check_document(&bytes)
         .err()
         .map(|error| format!("store does not parse, not backed up: {error}"));
-    let config = match fs::read_to_string(state_dir.join("config.toml")) {
+    let config = match fs::read_to_string(crate::store::config_path(state_dir)) {
         Ok(config) => sanitized_config(&config),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("could not read config.toml: {error}")),
@@ -999,7 +999,7 @@ fn trigger_flag(state_dir: &Path, trigger: Trigger) -> PathBuf {
     state_dir.join(format!("{TRIGGER_FLAG_PREFIX}{}", trigger.word()))
 }
 
-/// What one backup writes: the store, `config.toml` beside it when there is one (already
+/// What one backup writes: the store, `config.toml` when there is one (already
 /// stripped of secrets), `machine.toml`, and what its commit message records.
 struct Payload<'a> {
     store: &'a [u8],

@@ -70,6 +70,7 @@ same PR, never leave them apart.
 | `src/git_base.rs` | dispatch base branches, resolved in the task's repository |
 | `src/context.rs`, `src/scope.rs` | invocation context from Herdr and the cwd, project path resolution |
 | `src/save_recovery.rs` | retry or cancel of one failed save |
+| `src/migrate.rs` | `tsk migrate`: the one-time move from `~/.tsk` to the XDG data and settings directories |
 | `src/fsperm.rs` | private file modes for the state directory |
 | `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, `tsk setup rex` (`src/setup/rex.rs`, `src/setup/rex.lua`), agent skill install (`tsk-cli` and `tsk-coordinator`) |
 | `src/board_pane.rs` | `--find-board-pane` lookup for the launchers |
@@ -308,6 +309,11 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   reverses the whole set, and a stale batch refuses without touching any task. The one
   exception is a start that dispatches: its launches land one by one and are not undoable
   (see Assignee and dispatch).
+- The settings file is resolved by `store::config_path`, never
+  `state_dir.join("config.toml")`: `config.toml` lives in the XDG config directory
+  (`$XDG_CONFIG_HOME/tsk`, `%APPDATA%\tsk`), and an explicit `TSK_STATE_DIR`,
+  `--state-dir`, or a pre-XDG store keeps it beside the store. `tsk migrate` is the only
+  code that moves a store; a store still in `~/.tsk` keeps winning until it runs.
 - The state dir must be a real directory on a local disk (flock plus rename replace);
   permission hardening refuses a symlink rather than chmodding its target. Host-injected
   `HERDR_PLUGIN_*` dirs are ignored on purpose.
