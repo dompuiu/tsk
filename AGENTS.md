@@ -427,8 +427,9 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   these stable probes. Keep their output shape stable, and keep the installers' fallback
   for a binary that lacks them (empty probe output means "old binary", never "no agents").
 - `tsk setup herdr` never adds the default chord for a plugin command the user bound on
-  another key; a binding on the default key still goes through conflict repair. `tsk update`
-  refreshes a bound plugin noninteractively and relies on both.
+  another key, or a shell command that invokes the action; a binding on the default key
+  still goes through conflict repair. `tsk update` refreshes a bound plugin
+  noninteractively and relies on both.
 
 ## Cutting a release
 

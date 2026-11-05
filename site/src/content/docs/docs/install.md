@@ -214,7 +214,7 @@ Done. Run tsk in a project directory to open the board.
 - **Backup:** before changing the config, setup saves a copy beside it, `config.toml.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC. A second setup in the same second adds `-1`, `-2`, and so on.
 - **Symlinks:** a symlinked config file or `herdr` directory (dotfiles) is followed. Setup edits the real file, keeps the link, and saves the copy beside the real file. A dangling or looping link is refused before any change.
 - **Shortcut conflicts:** setup asks before replacing a binding. Declining keeps yours, and the output says so. Without a terminal, a conflict stops setup before it writes anything.
-- **Your own keys:** a plugin command you already bound to another key keeps it. Setup does not add the default shortcut beside it.
+- **Your own keys:** a plugin command you already bound to another key keeps it. Setup also recognises a shell command that invokes the action (`herdr plugin action invoke open-board --plugin herdr-tsk`), on either platform's action name. It does not add the default shortcut beside it.
 - **Reruns:** running setup again updates the registration without duplicating bindings.
 - **Binary path:** setup records the `tsk` you ran. Run the one on your PATH, not a versioned Homebrew Cellar path, so upgrades keep working.
 - **Windows:** setup writes PowerShell launchers.

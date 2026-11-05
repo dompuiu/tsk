@@ -337,6 +337,70 @@ fn an_action_bound_on_a_custom_key_is_kept_and_no_default_chord_is_added() {
 }
 
 #[test]
+fn a_shell_wrapper_invoking_the_action_counts_as_bound() {
+    use tsk_tui::setup::{bound_shortcuts, commands_bound};
+    // One dotfiles config for both platforms: a shell command tries the Windows action, then
+    // the Unix one. Setup must keep prefix+alt+t and not add prefix+t beside it.
+    let source = format!(
+        "[[keys.command]]\nkey = 'prefix+alt+t'\ntype = 'shell'\ncommand = 'herdr plugin action invoke open-board-windows --plugin herdr-tsk || herdr plugin action invoke open-board --plugin herdr-tsk'\n[[keys.command]]\nkey = 'prefix+alt+a'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        QUICK_CAPTURE
+    );
+    assert!(commands_bound(&source));
+    assert_eq!(
+        bound_shortcuts(&source),
+        vec![
+            ("prefix+alt+t".to_string(), "board"),
+            ("prefix+alt+a".to_string(), "quick capture"),
+        ]
+    );
+    let edited =
+        edit_bindings(&source, false, |_, _| panic!("a wrapper is not a conflict")).unwrap();
+    let doc = edited.parse::<toml_edit::DocumentMut>().unwrap();
+    let commands = doc["keys"]["command"].as_array_of_tables().unwrap();
+    let keys: Vec<Option<&str>> = commands
+        .iter()
+        .map(|t| t.get("key").and_then(|k| k.as_str()))
+        .collect();
+    assert_eq!(
+        keys,
+        [Some("prefix+alt+t"), Some("prefix+alt+a")],
+        "{edited}"
+    );
+    assert!(!edited.contains("'prefix+t'"), "{edited}");
+}
+
+#[test]
+fn a_shell_wrapper_on_the_default_chord_is_kept_without_a_second_binding() {
+    let source =
+        "[[keys.command]]\nkey = 'prefix+t'\ntype = 'shell'\ncommand = 'herdr plugin action invoke open-board --plugin herdr-tsk'\n";
+    let edited = edit_bindings(source, false, |_, _| panic!("no conflicts")).unwrap();
+    let doc = edited.parse::<toml_edit::DocumentMut>().unwrap();
+    let commands = doc["keys"]["command"].as_array_of_tables().unwrap();
+    let on_default: Vec<&toml_edit::Table> = commands
+        .iter()
+        .filter(|t| t.get("key").and_then(|k| k.as_str()) == Some("prefix+t"))
+        .collect();
+    assert_eq!(on_default.len(), 1, "{edited}");
+    assert_eq!(on_default[0]["type"].as_str(), Some("shell"), "{edited}");
+    assert!(edited.contains(QUICK_CAPTURE), "{edited}");
+}
+
+#[test]
+fn a_shell_command_that_does_not_invoke_the_action_is_not_a_binding() {
+    use tsk_tui::setup::commands_bound;
+    let other_plugin = format!(
+        "[[keys.command]]\nkey = 'prefix+t'\ntype = 'shell'\ncommand = 'herdr plugin action invoke open-board --plugin other'\n[[keys.command]]\nkey = 'prefix+a'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        QUICK_CAPTURE
+    );
+    assert!(!commands_bound(&other_plugin));
+    let other_action = format!(
+        "[[keys.command]]\nkey = 'prefix+t'\ntype = 'shell'\ncommand = 'herdr plugin action invoke open-board-extra --plugin herdr-tsk'\n[[keys.command]]\nkey = 'prefix+a'\ntype = 'plugin_action'\ncommand = '{}'\n",
+        QUICK_CAPTURE
+    );
+    assert!(!commands_bound(&other_action));
+}
+
+#[test]
 fn commands_bound_matches_both_plugin_commands_on_any_key() {
     use tsk_tui::setup::commands_bound;
     let both = format!(

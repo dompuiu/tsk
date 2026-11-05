@@ -22,6 +22,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - A `[project."<path>"] pull_requests` override lands one repository locally while others keep pull requests.
 - `[merge] method` also shapes a local land: a merge commit, one squash commit, or the branch's commits replayed onto the base.
 
+### Fixed
+
+- `tsk setup herdr` keeps your shortcut when a shell command already invokes the plugin action, and no longer adds the default chord beside it.
+
 ## v0.14.1
 
 ### Added
