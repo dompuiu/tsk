@@ -1419,7 +1419,81 @@ pub fn require_home_or_override(args: &[String]) -> Result<(), String> {
     Err("set TSK_STATE_DIR to say where the board lives".to_string())
 }
 
-/// State dir from `TSK_STATE_DIR`, else `~/.tsk`.
+/// Name of the settings file inside the config or state directory.
+pub const CONFIG_FILE: &str = "config.toml";
+
+pub(crate) fn env_dir(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// `$XDG_DATA_HOME` (default `~/.local/share`) on Unix, `%LOCALAPPDATA%` on Windows.
+fn data_home() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        if let Some(dir) = env_dir("XDG_DATA_HOME") {
+            return Some(dir);
+        }
+        env_dir("HOME").map(|home| home.join(".local/share"))
+    }
+    #[cfg(windows)]
+    {
+        env_dir("LOCALAPPDATA")
+            .or_else(|| env_dir("USERPROFILE").map(|home| home.join("AppData/Local")))
+    }
+    #[cfg(not(any(unix, windows)))]
+    None
+}
+
+/// `$XDG_CONFIG_HOME` (default `~/.config`) on Unix, `%APPDATA%` on Windows.
+fn config_home() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        if let Some(dir) = env_dir("XDG_CONFIG_HOME") {
+            return Some(dir);
+        }
+        env_dir("HOME").map(|home| home.join(".config"))
+    }
+    #[cfg(windows)]
+    {
+        env_dir("APPDATA").or_else(|| env_dir("USERPROFILE").map(|p| p.join("AppData/Roaming")))
+    }
+    #[cfg(not(any(unix, windows)))]
+    None
+}
+
+/// The pre-XDG state directory: `~/.tsk`, and on Windows `%LOCALAPPDATA%\tsk`. An
+/// installation that still has one keeps using it until `tsk migrate` moves it.
+pub fn legacy_state_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        env_dir("HOME").map(|home| home.join(".tsk"))
+    }
+    #[cfg(windows)]
+    {
+        if let Some(local) = env_dir("LOCALAPPDATA") {
+            return Some(local.join("tsk"));
+        }
+        env_dir("USERPROFILE").map(|home| home.join(".tsk"))
+    }
+    #[cfg(not(any(unix, windows)))]
+    None
+}
+
+/// The data directory (`tsk.json`, trash, backups, launchers, locks), ignoring any pre-XDG
+/// `~/.tsk` store: `$XDG_DATA_HOME/tsk` on Unix, `%LOCALAPPDATA%\tsk` on Windows.
+pub fn default_data_dir() -> Option<PathBuf> {
+    data_home().map(|home| home.join("tsk"))
+}
+
+/// The config directory (`config.toml`): `$XDG_CONFIG_HOME/tsk` on Unix,
+/// `%APPDATA%\tsk` on Windows.
+pub fn default_config_dir() -> Option<PathBuf> {
+    config_home().map(|home| home.join("tsk"))
+}
+
+/// State dir from `TSK_STATE_DIR`, else the XDG data dir, else an unmigrated `~/.tsk`.
 ///
 /// One store everywhere: the herdr plugin pane and a bare terminal run resolve to the same
 /// files, so there is exactly one board regardless of host. Herdr's injected
@@ -1428,34 +1502,55 @@ pub fn require_home_or_override(args: &[String]) -> Result<(), String> {
 /// the injected location. Empty values fall through. Never falls back to a shared world path
 /// under `std::env::temp_dir()`.
 pub fn default_state_dir() -> PathBuf {
-    if let Some(dir) = env::var_os("TSK_STATE_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+    if let Some(dir) = env_dir("TSK_STATE_DIR") {
+        return dir;
     }
-    #[cfg(unix)]
-    {
-        if let Some(home) = env::var_os("HOME") {
-            if !home.is_empty() {
-                return PathBuf::from(home).join(".tsk");
+    if let Some(data) = default_data_dir() {
+        // A pre-XDG `~/.tsk` keeps winning until `tsk migrate` moves it, so an upgrade
+        // never opens an empty board beside the user's tasks. A directory with only a
+        // config.toml counts too: its settings must not be replaced by a fresh starter.
+        if !data.join(STATE_FILE).exists() {
+            if let Some(legacy) = legacy_state_dir() {
+                if legacy != data
+                    && (legacy.join(STATE_FILE).exists() || legacy.join(CONFIG_FILE).exists())
+                {
+                    return legacy;
+                }
             }
         }
-    }
-    #[cfg(windows)]
-    {
-        if let Some(local) = env::var_os("LOCALAPPDATA") {
-            if !local.is_empty() {
-                return PathBuf::from(local).join("tsk");
-            }
-        }
-        if let Some(userprofile) = env::var_os("USERPROFILE") {
-            if !userprofile.is_empty() {
-                return PathBuf::from(userprofile).join(".tsk");
-            }
-        }
+        return data;
     }
     // Last resort: relative per-process dir (still not shared /tmp/tsk-state).
     PathBuf::from(".tsk-state")
+}
+
+/// The settings file for `state_dir`: `config.toml` in the XDG config directory.
+///
+/// An explicit `TSK_STATE_DIR` or `--state-dir` keeps `config.toml` inside that one
+/// directory, so tests and one-off runs stay self-contained. A `config.toml` still sitting
+/// beside the store (an installation that has not run `tsk migrate`) is used until it moves.
+pub fn config_path(state_dir: &Path) -> PathBuf {
+    if let Some(dir) = env_dir("TSK_CONFIG_DIR") {
+        return dir.join(CONFIG_FILE);
+    }
+    let in_state_dir = state_dir.join(CONFIG_FILE);
+    // On Unix a pre-XDG store lives outside the data directory, so its settings stay with
+    // it (even before the file is written) until `tsk migrate` moves both. On Windows the
+    // pre-XDG store *is* the data directory, so only a file still there counts.
+    let legacy_pair = legacy_state_dir().is_some_and(|legacy| {
+        legacy == state_dir && default_data_dir().as_deref() != Some(state_dir)
+    });
+    let paired_with_store = env_dir("TSK_STATE_DIR").is_some()
+        || state_dir != default_state_dir()
+        || legacy_pair
+        || in_state_dir.exists();
+    if paired_with_store {
+        return in_state_dir;
+    }
+    match default_config_dir() {
+        Some(dir) => dir.join(CONFIG_FILE),
+        None => in_state_dir,
+    }
 }
 
 fn peek_format_version(data: &str) -> Result<u32, StoreError> {
@@ -2100,6 +2195,120 @@ mod tests {
             fallback_s.contains("tsk") || fallback_s == ".tsk-state",
             "unexpected fallback: {fallback_s}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_store_and_its_config_live_in_separate_xdg_directories() {
+        let _lock = env_lock();
+        let root = temp_dir("xdg-split");
+        let _guard = TempDirGuard(root.clone());
+        let names = [
+            "HOME",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "TSK_STATE_DIR",
+            "TSK_CONFIG_DIR",
+        ];
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> = names
+            .iter()
+            .map(|name| (*name, env::var_os(name)))
+            .collect();
+        let home = root.join("home");
+        let data = root.join("data");
+        let config = root.join("config");
+        fs::create_dir_all(&home).expect("home");
+        // SAFETY: single-threaded under ENV_LOCK for the duration of this test.
+        env::set_var("HOME", &home);
+        env::set_var("XDG_DATA_HOME", &data);
+        env::set_var("XDG_CONFIG_HOME", &config);
+        env::remove_var("TSK_STATE_DIR");
+        env::remove_var("TSK_CONFIG_DIR");
+
+        let store = data.join("tsk");
+        fs::create_dir_all(&store).expect("store");
+        fs::write(store.join(STATE_FILE), "{}").expect("store file");
+        assert_eq!(default_state_dir(), store);
+        assert_eq!(config_path(&store), config.join("tsk").join(CONFIG_FILE));
+
+        // A config.toml still beside the store (not yet migrated) keeps working.
+        fs::write(store.join(CONFIG_FILE), "").expect("legacy config");
+        assert_eq!(config_path(&store), store.join(CONFIG_FILE));
+        fs::remove_file(store.join(CONFIG_FILE)).expect("remove config");
+
+        // An explicitly chosen state directory is one directory: config stays inside it.
+        let explicit = root.join("elsewhere");
+        assert_eq!(config_path(&explicit), explicit.join(CONFIG_FILE));
+        env::set_var("TSK_STATE_DIR", &explicit);
+        assert_eq!(default_state_dir(), explicit);
+        assert_eq!(config_path(&explicit), explicit.join(CONFIG_FILE));
+        env::remove_var("TSK_STATE_DIR");
+
+        // TSK_CONFIG_DIR wins over the default config directory.
+        let settings = root.join("settings");
+        env::set_var("TSK_CONFIG_DIR", &settings);
+        assert_eq!(config_path(&store), settings.join(CONFIG_FILE));
+        env::remove_var("TSK_CONFIG_DIR");
+
+        // A pre-XDG store keeps winning, with its config, until migrate moves it.
+        fs::remove_file(store.join(STATE_FILE)).expect("remove store");
+        let legacy = home.join(".tsk");
+        fs::create_dir_all(&legacy).expect("legacy");
+        fs::write(legacy.join(STATE_FILE), "{}").expect("legacy store");
+        assert_eq!(default_state_dir(), legacy);
+        assert_eq!(config_path(&legacy), legacy.join(CONFIG_FILE));
+
+        // A legacy directory with only settings still wins: its profiles are not replaced.
+        fs::remove_file(legacy.join(STATE_FILE)).expect("remove legacy store");
+        fs::write(legacy.join(CONFIG_FILE), "[board]\n").expect("legacy config");
+        assert_eq!(default_state_dir(), legacy);
+
+        for (name, value) in saved {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_keeps_data_in_localappdata_and_settings_in_appdata() {
+        let _lock = env_lock();
+        let root = temp_dir("windows-split");
+        let _guard = TempDirGuard(root.clone());
+        let names = ["LOCALAPPDATA", "APPDATA", "TSK_STATE_DIR", "TSK_CONFIG_DIR"];
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> = names
+            .iter()
+            .map(|name| (*name, env::var_os(name)))
+            .collect();
+        let local = root.join("local");
+        let roaming = root.join("roaming");
+        // SAFETY: single-threaded under ENV_LOCK for the duration of this test.
+        env::set_var("LOCALAPPDATA", &local);
+        env::set_var("APPDATA", &roaming);
+        env::remove_var("TSK_STATE_DIR");
+        env::remove_var("TSK_CONFIG_DIR");
+
+        assert_eq!(default_state_dir(), local.join("tsk"));
+        assert_eq!(
+            config_path(&local.join("tsk")),
+            roaming.join("tsk").join(CONFIG_FILE)
+        );
+        // A config.toml still beside the store (the pre-XDG layout) keeps winning.
+        fs::create_dir_all(local.join("tsk")).expect("store");
+        fs::write(local.join("tsk").join(CONFIG_FILE), "").expect("config");
+        assert_eq!(
+            config_path(&local.join("tsk")),
+            local.join("tsk").join(CONFIG_FILE)
+        );
+
+        for (name, value) in saved {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
     }
 
     fn write_state_json(dir: &Path, value: serde_json::Value) {

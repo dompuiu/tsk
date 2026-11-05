@@ -223,6 +223,7 @@ pub fn top_level_help() -> String {
         "Setup\n",
         "  setup    register with Herdr or Rex, or install the agent skill\n",
         "  update   install the latest stable release\n",
+        "  migrate  move an old ~/.tsk into the XDG data and config directories\n",
         "  guide    print the agent workflow\n\n",
         "Statuses\n",
         "  open     captured, not yet picked (inbox)\n",
@@ -2801,6 +2802,64 @@ pub fn update_help() -> CliOutput {
             false,
         ),
     })
+}
+
+pub fn migrate_help() -> CliOutput {
+    help(HelpDoc {
+        usage: vec!["tsk migrate".into()],
+        purpose: "Move a store still in ~/.tsk to $XDG_DATA_HOME/tsk, and its config.toml to $XDG_CONFIG_HOME/tsk. Run it once after upgrading; a store in ~/.tsk keeps working until then.".into(),
+        groups: Vec::new(),
+        examples: vec!["tsk migrate".into()],
+        refusals: vec![
+            "the new location already holds files".into(),
+            "a board is open, or TSK_STATE_DIR or TSK_CONFIG_DIR is set".into(),
+        ],
+        exit: exit_line(
+            "store and config moved, or nothing to migrate",
+            Some("refused, nothing moved"),
+            false,
+        ),
+    })
+}
+
+pub fn migrated(report: &crate::migrate::Report) -> CliOutput {
+    let stdout = if report.store_moved {
+        format!(
+            "Moved {} to:\n    Store:  {}\n    Config: {}\n",
+            terminal_text(&report.legacy.display().to_string()),
+            terminal_text(&report.data.display().to_string()),
+            terminal_text(&report.config_file.display().to_string()),
+        )
+    } else if report.moved {
+        format!(
+            "Moved the settings to {}.\n",
+            terminal_text(&report.config_file.display().to_string()),
+        )
+    } else {
+        format!(
+            "Nothing to migrate: {} does not exist.\n",
+            terminal_text(&report.legacy.display().to_string()),
+        )
+    };
+    CliOutput {
+        stdout,
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn migrate_error(error: &str) -> CliOutput {
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk migrate: {}\n", terminal_text(error)),
+        code: 1,
+    }
+}
+
+const MIGRATE_USAGE: &[&str] = &["tsk migrate"];
+
+pub fn migrate_usage(reason: &str) -> CliOutput {
+    usage_error("migrate", reason, MIGRATE_USAGE)
 }
 
 pub fn capture_help() -> CliOutput {

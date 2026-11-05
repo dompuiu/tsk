@@ -149,7 +149,7 @@ python3 scripts/release.py assemble <tag> <output-directory>
 - Never point a candidate binary at a store you did not create for the rehearsal. Pass the
   state override as `env TSK_STATE_DIR=… /path/tsk`. In a Herdr pane, read until an idle
   prompt first: a pending shell prompt can eat the first character of a `VAR=value`
-  prefix, and the candidate then opens and migrates the real `~/.tsk`.
+  prefix, and the candidate then opens the real store (`~/.tsk` or the XDG directories).
 - `brew install --formula tsk.rb` on a machine with the tap's `tsk` installed replaces the
   daily copy (same formula name) and removes the old keg. Use a throwaway machine, or
   `brew unlink` first and expect to `brew reinstall smarzban/tap/tsk` afterwards.
@@ -200,7 +200,7 @@ Homebrew install gets `brew upgrade` guidance instead.
 - Homebrew installs are noninteractive and never run the curl installer's asks. The
   formula caveat tells users to run `tsk setup herdr` and `tsk setup agents`.
 - Uninstall through the channel used to install: `brew uninstall tsk`, or remove the
-  installer-created executable. Neither deletes `~/.tsk`.
+  installer-created executable. Neither deletes the store (`~/.tsk` or the XDG directories).
 
 ## Herdr setup internals
 
@@ -284,7 +284,7 @@ To remove the integration:
 4. Reload the config.
 
 - Restore a setup backup only if it will not discard later edits.
-- Removing the binary alone leaves Herdr config and `~/.tsk` intact.
+- Removing the binary alone leaves Herdr config and the tsk store intact.
 - A failed asset integrity check names the file to inspect. Never erase an unrelated
   checkout or package-manager installation to recover setup.
 - Smoke tests isolate state as [AGENTS.md](../AGENTS.md#isolated-state) says. Never relink

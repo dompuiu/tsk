@@ -31,6 +31,7 @@ tsk list
 | [`tsk restore`](#restore) | Put a backed-up version of the store back |
 | [`tsk setup`](#setup) | Register Herdr or Rex, or install the agent skill |
 | [`tsk update`](#update) | Install the latest stable release |
+| [`tsk migrate`](#migrate) | Move a store still in `~/.tsk` to the XDG directories |
 | [`tsk guide`](#guide) | Print the agent workflow |
 
 - `tsk --help` lists the commands. `tsk help <command>` and `tsk <command> --help` print the same reference for one command: usage, flags, examples, refusals, and exit codes. Help wraps at 80 columns.
@@ -779,6 +780,24 @@ tsk update
 ```sh
 tsk update
 ```
+
+## migrate
+
+Moves a store still in `~/.tsk` to the [data and settings directories](/docs/storage/#location), once. Until it runs, a store in `~/.tsk` keeps working.
+
+```text
+tsk migrate
+```
+
+```text
+Moved /Users/me/.tsk to:
+    Store:  /Users/me/.local/share/tsk
+    Config: /Users/me/.config/tsk/config.toml
+```
+
+A second run prints `Nothing to migrate`.
+
+**Refusals:** exit 1, nothing moved, when the new location already holds files, a board is open, or `TSK_STATE_DIR` or `TSK_CONFIG_DIR` is set. Extra arguments are a usage error, exit 2.
 
 ## guide
 

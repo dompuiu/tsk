@@ -105,6 +105,7 @@ fn run_verb<R: Read>(
         Some("update") if args.get(2).map(String::as_str) == Some("--help") => {
             presenter::update_help()
         }
+        Some("migrate") => run_migrate(args),
         Some("add") => run_add(args, &mut stdin, stdin_is_tty),
         Some("steps") => run_steps(args),
         Some("list") => run_list(args, terminal_width),
@@ -126,7 +127,7 @@ fn run_verb<R: Read>(
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
+            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, project, setup, update, migrate, or guide command",
         ),
     }
 }
@@ -137,6 +138,19 @@ fn share_fetch_window(state_dir: &Option<std::path::PathBuf>) {
         .clone()
         .unwrap_or_else(crate::store::default_state_dir);
     crate::git_base::remember_fetches_in(&dir);
+}
+
+/// `tsk migrate`: one-time move of a pre-XDG store. The whole verb is the move, so there is
+/// nothing to parse beyond `--help`.
+fn run_migrate(args: Vec<String>) -> CliOutput {
+    match args.get(2..).unwrap_or(&[]) {
+        [] => match crate::migrate::run() {
+            Ok(report) => presenter::migrated(&report),
+            Err(error) => presenter::migrate_error(&error),
+        },
+        [help] if help == "--help" => presenter::migrate_help(),
+        _ => presenter::migrate_usage("expected migrate, or migrate --help"),
+    }
 }
 
 fn run_help(args: Vec<String>) -> CliOutput {
@@ -164,6 +178,7 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "project" => presenter::project_help(),
             "setup" => presenter::setup_help(),
             "update" => presenter::update_help(),
+            "migrate" => presenter::migrate_help(),
             "guide" => presenter::guide_help(),
             _ => presenter::help_usage(&format!("unknown command {verb}")),
         },

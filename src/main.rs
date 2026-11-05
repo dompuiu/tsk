@@ -47,7 +47,7 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Surface::Setup | Surface::Guide | Surface::Help => headless_main(args),
+        Surface::Setup | Surface::Guide | Surface::Help | Surface::Migrate => headless_main(args),
         // `capture --help` is reference text like every other verb's: the headless runner owns it.
         Surface::Capture if args.len() == 3 && args[2] == "--help" => headless_main(args),
         Surface::Capture => {

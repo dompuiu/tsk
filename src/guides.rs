@@ -95,7 +95,7 @@ pub const CATALOG: [Guide; 4] = [
                 Run `tsk setup` once: it finds the coding agents on your machine (Claude Code, Codex, Pi, Grok, and others) and offers to install the tsk skill for each. `tsk setup claude` targets one. Then ask the agent in plain words. \"Add a task for each failing test.\" \"Mark T7 as review.\" `tsk guide` prints the same instructions if you want to read them yourself.\n\
                 \n\
                 **Hand a task to an agent**\n\
-                - Agent profiles in `config.toml`, beside your tasks (`~/.tsk` on macOS and Linux), say how to launch each agent. Remove the `#` from a starter example to use it.\n\
+                - Agent profiles in `config.toml`, in the tsk settings directory, say how to launch each agent. Remove the `#` from a starter example to use it.\n\
                 - Press `@` on a task to assign it to a profile.\n\
                 - In Herdr or Rex, `ctrl+s` on an assigned project task starts it and launches the agent in its own Git worktree.\n\
                 - When the agent blocks, press `r` on the task to answer, then `ctrl+s` to send the answer and unblock.\n\

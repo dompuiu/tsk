@@ -17,7 +17,6 @@ use crate::domain::{
 };
 use crate::ui::queue::{GroupBy, SortBy};
 
-const CONFIG_FILE: &str = "config.toml";
 pub const CONFIG_TEMP_PREFIX: &str = ".config.toml.tmp.";
 static CONFIG_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -265,14 +264,15 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 /// The temporary file is complete and synced before one atomic hard-link creates the target.
 /// A target that already exists wins without being changed, including an empty file.
 pub fn seed_on_open(state_dir: &Path) -> io::Result<bool> {
-    let target = state_dir.join(CONFIG_FILE);
+    let target = crate::store::config_path(state_dir);
+    let dir = target.parent().unwrap_or(Path::new("."));
     // The common case is an existing file: answer without writing anything. The hard
     // link below still decides the race when two opens find it missing at once.
     if target.exists() {
         return Ok(false);
     }
-    crate::fsperm::ensure_private_dir(state_dir)?;
-    let tmp = unique_tmp_path(state_dir);
+    crate::fsperm::ensure_private_dir(dir)?;
+    let tmp = unique_tmp_path(dir);
     let write_result = (|| -> io::Result<bool> {
         let mut temp_file = create_private_temp(&tmp)?;
         temp_file.write_all(STARTER_CONFIG.as_bytes())?;
@@ -281,7 +281,7 @@ pub fn seed_on_open(state_dir: &Path) -> io::Result<bool> {
         match fs::hard_link(&tmp, &target) {
             Ok(()) => {
                 fs::remove_file(&tmp)?;
-                fs::File::open(state_dir)?.sync_all()?;
+                fs::File::open(dir)?.sync_all()?;
                 Ok(true)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -320,28 +320,30 @@ fn unique_tmp_path(dir: &Path) -> PathBuf {
     ))
 }
 
-/// `<state_dir>/config.toml`'s text, `None` when the file does not exist.
+/// The settings file's text, `None` when the file does not exist.
 pub(crate) fn read_config(state_dir: &Path) -> io::Result<Option<String>> {
-    match fs::read_to_string(state_dir.join(CONFIG_FILE)) {
+    match fs::read_to_string(crate::store::config_path(state_dir)) {
         Ok(content) => Ok(Some(content)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
 
-/// Replace `<state_dir>/config.toml` with `content`: a private, synced temp file renamed over
+/// Replace the settings file with `content`: a private, synced temp file renamed over
 /// the target, so a reader sees the old file or the new one, never a torn one.
 pub(crate) fn write_config(state_dir: &Path, content: &str) -> io::Result<()> {
-    crate::fsperm::ensure_private_dir(state_dir)?;
-    let tmp = unique_tmp_path(state_dir);
+    let target = crate::store::config_path(state_dir);
+    let dir = target.parent().unwrap_or(Path::new("."));
+    crate::fsperm::ensure_private_dir(dir)?;
+    let tmp = unique_tmp_path(dir);
     let result = (|| -> io::Result<()> {
         let mut temp_file = create_private_temp(&tmp)?;
         temp_file.write_all(content.as_bytes())?;
         temp_file.sync_all()?;
         drop(temp_file);
-        crate::fsperm::replace_file(&tmp, &state_dir.join(CONFIG_FILE))?;
+        crate::fsperm::replace_file(&tmp, &target)?;
         #[cfg(not(windows))]
-        fs::File::open(state_dir)?.sync_all()?;
+        fs::File::open(dir)?.sync_all()?;
         Ok(())
     })();
     if result.is_err() {
@@ -389,9 +391,10 @@ pub struct AgentProfiles {
 }
 
 impl AgentProfiles {
-    /// Load profiles from `<state_dir>/config.toml`. A missing file is an empty profile set.
+    /// Load profiles from the settings file (`store::config_path`). A missing file is an empty
+    /// profile set.
     pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
-        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let path = crate::store::config_path(state_dir.as_ref());
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -523,10 +526,10 @@ pub struct OwnerName {
 }
 
 impl OwnerName {
-    /// Read `[board] me` from `<state_dir>/config.toml`, checked against `profiles`. A missing
+    /// Read `[board] me` from the settings file, checked against `profiles`. A missing
     /// file, table, or key is no name; a refused name keeps `you` and says why.
     pub fn load(state_dir: impl AsRef<Path>, profiles: &AgentProfiles) -> Self {
-        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let path = crate::store::config_path(state_dir.as_ref());
         match fs::read_to_string(&path) {
             Ok(content) => Self::parse(&content, profiles),
             Err(source) if source.kind() == io::ErrorKind::NotFound => Self::default(),
@@ -875,10 +878,10 @@ impl MergeMethod {
         }
     }
 
-    /// Read `[merge] method` from `<state_dir>/config.toml`. A missing file or table is the
+    /// Read `[merge] method` from the settings file. A missing file or table is the
     /// default; only the `[merge]` table is validated, so a broken profile never blocks it.
     pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
-        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let path = crate::store::config_path(state_dir.as_ref());
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -940,10 +943,10 @@ pub struct WorkflowSettings {
 }
 
 impl WorkflowSettings {
-    /// Read `[workflow]` from `<state_dir>/config.toml`. A missing file, table, or key is the
+    /// Read `[workflow]` from the settings file. A missing file, table, or key is the
     /// default; a bad value is reported, never fatal.
     pub fn load(state_dir: impl AsRef<Path>) -> Self {
-        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let path = crate::store::config_path(state_dir.as_ref());
         match fs::read_to_string(&path) {
             Ok(content) => Self::parse(&content),
             Err(source) if source.kind() == io::ErrorKind::NotFound => Self::default(),
@@ -1056,11 +1059,11 @@ pub struct BoardDefaults {
 }
 
 impl BoardDefaults {
-    /// Read `[board]` from `<state_dir>/config.toml`. A missing file, table, or key is the
+    /// Read `[board]` from the settings file. A missing file, table, or key is the
     /// default (ungrouped, recent); only the `[board]` table is validated, so a broken
     /// profile never blocks it.
     pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
-        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let path = crate::store::config_path(state_dir.as_ref());
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
