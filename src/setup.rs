@@ -89,12 +89,13 @@ pub fn edit_bindings(
         return Err(error("keys.command must be an array of tables"));
     }
     for (key, action) in BINDINGS {
-        // An action the user already bound on a different key is satisfied: setup never adds
-        // the default chord beside a custom one. `tsk update` relies on this to refresh a
-        // registration without touching remapped shortcuts. A binding on the default key
-        // itself still goes through conflict detection below, so a builtin shadowing it can
-        // be repaired.
-        if action_bound_elsewhere(keys, key, action) {
+        // An action the user already bound elsewhere is satisfied: setup never adds the
+        // default chord beside a custom one. `tsk update` relies on this to refresh a
+        // registration without touching remapped shortcuts. A shell wrapper that invokes
+        // the action counts too, wherever it sits: the user's own entry is kept. A
+        // `plugin_action` entry on the default key still goes through conflict detection
+        // below, so a builtin shadowing it can be repaired.
+        if action_bound_elsewhere(keys, key, action) || shell_action_on(keys, key, action) {
             continue;
         }
         let builtin: Vec<String> = keys
@@ -156,33 +157,40 @@ pub fn edit_bindings(
     Ok(doc.to_string())
 }
 
-/// The keys each reachable `plugin_action` entry for `action` is bound to. An entry with no
-/// key, an empty key, or an empty key array is unreachable and does not count.
-fn action_keys(keys: &Table, action: &str) -> Vec<String> {
-    fn keys_of(t: &Table) -> Vec<String> {
-        match t.get("key") {
-            Some(Item::Value(v)) if v.as_str().is_some() => v
-                .as_str()
-                .map(str::trim)
-                .filter(|k| !k.is_empty())
-                .map(|k| vec![k.to_string()])
-                .unwrap_or_default(),
-            Some(Item::Value(v)) if v.as_array().is_some() => v
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|k| k.as_str().map(str::trim))
-                .filter(|k| !k.is_empty())
-                .map(str::to_string)
-                .collect(),
-            _ => Vec::new(),
-        }
+/// The bare command name an action ID names, with the Windows twin folded onto its
+/// platform-neutral name: `herdr-tsk.open-board-windows` and `herdr-tsk.open-board` are one
+/// command. Users keep one dotfiles config for both platforms.
+fn action_name(action: &str) -> &str {
+    let name = action.rsplit('.').next().unwrap_or(action);
+    name.strip_suffix("-windows").unwrap_or(name)
+}
+
+/// The keys an entry carries. An entry with no key, an empty key, or an empty key array is
+/// unreachable and does not count.
+fn entry_keys(entry: &Table) -> Vec<String> {
+    match entry.get("key") {
+        Some(Item::Value(value)) if value.as_str().is_some() => value
+            .as_str()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(|key| vec![key.to_string()])
+            .unwrap_or_default(),
+        Some(Item::Value(value)) if value.as_array().is_some() => value
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|key| key.as_str().map(str::trim))
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
     }
-    let correct = |t: &Table| {
-        t.get("type").and_then(Item::as_str) == Some("plugin_action")
-            && t.get("command").and_then(Item::as_str) == Some(action)
-    };
-    let tables: Vec<Table> = match keys.get("command") {
+}
+
+/// Every table under `keys.command`, whether written as `[[keys.command]]` or as an inline
+/// array on `keys`.
+fn command_tables(keys: &Table) -> Vec<Table> {
+    match keys.get("command") {
         Some(Item::ArrayOfTables(commands)) => commands.iter().cloned().collect(),
         Some(Item::Value(value)) => value
             .as_array()
@@ -194,12 +202,64 @@ fn action_keys(keys: &Table, action: &str) -> Vec<String> {
             })
             .unwrap_or_default(),
         _ => Vec::new(),
-    };
-    tables
+    }
+}
+
+/// Whether a shell command runs `action` through the Herdr CLI. The documented form is
+/// `herdr plugin action invoke <action> --plugin herdr-tsk`. One command may hold several
+/// invocations, so each shell segment is checked on its own.
+fn invokes_action(command: &str, action: &str) -> bool {
+    let wanted = action_name(action);
+    command.split(['|', '&', ';']).any(|segment| {
+        let tokens: Vec<&str> = segment
+            .split_whitespace()
+            .map(|token| token.trim_matches(['\'', '"']))
+            .collect();
+        let Some(at) = tokens
+            .windows(2)
+            .position(|pair| pair[0] == "action" && pair[1] == "invoke")
+        else {
+            return false;
+        };
+        let Some(name) = tokens.get(at + 2) else {
+            return false;
+        };
+        let named = tokens.contains(&"herdr-tsk") || tokens.contains(&"--plugin=herdr-tsk");
+        named && action_name(name) == wanted
+    })
+}
+
+/// Whether a `keys.command` entry runs `action`: a `plugin_action` declares it, a shell
+/// entry invokes it. Both count as a binding, so a wrapper kept for another platform does
+/// not get the default chord added beside it.
+fn runs_action(entry: &Table, action: &str) -> bool {
+    let command = entry.get("command").and_then(Item::as_str);
+    match entry.get("type").and_then(Item::as_str) {
+        Some("plugin_action") => command == Some(action),
+        Some("shell") => command.is_some_and(|command| invokes_action(command, action)),
+        _ => false,
+    }
+}
+
+/// The keys each reachable entry that runs `action` is bound to.
+fn action_keys(keys: &Table, action: &str) -> Vec<String> {
+    command_tables(keys)
         .iter()
-        .filter(|t| correct(t))
-        .flat_map(keys_of)
+        .filter(|entry| runs_action(entry, action))
+        .flat_map(entry_keys)
         .collect()
+}
+
+/// Whether a shell wrapper already on `key` runs `action`.
+fn shell_action_on(keys: &Table, key: &str, action: &str) -> bool {
+    command_tables(keys).iter().any(|entry| {
+        entry.get("type").and_then(Item::as_str) == Some("shell")
+            && entry.get("key").is_some_and(|item| has(item, key))
+            && entry
+                .get("command")
+                .and_then(Item::as_str)
+                .is_some_and(|command| invokes_action(command, action))
+    })
 }
 
 /// Whether `action` is reachable on some key other than its default chord.
@@ -209,7 +269,7 @@ fn action_bound_elsewhere(keys: &Table, default_key: &str, action: &str) -> bool
         .any(|bound| !same(bound, default_key))
 }
 
-/// Whether `keys.command` already carries a reachable `plugin_action` entry for `action`.
+/// Whether `keys.command` already carries a reachable entry running `action`.
 fn action_bound(keys: &Table, action: &str) -> bool {
     !action_keys(keys, action).is_empty()
 }
