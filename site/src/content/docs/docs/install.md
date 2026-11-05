@@ -53,11 +53,11 @@ herdr server reload-config
 
 | Shortcut | Action |
 | --- | --- |
-| `prefix+t` | Open the board in this workspace, or focus it across tabs |
+| `prefix+t` | Open a board in this tab, or focus this tab's board |
 | `prefix+a` | Quick capture |
 
 - Use your configured Herdr prefix. See the [Herdr keyboard guide](https://herdr.dev/docs/keyboard/).
-- Focusing an open board keeps its view. Other workspaces keep their own boards.
+- Focusing an open board keeps its view. Each Herdr tab keeps its own board; all boards share the same tasks.
 - Herdr's Windows plugin support is a preview.
 
 More: [Herdr setup details](#herdr-setup-details).

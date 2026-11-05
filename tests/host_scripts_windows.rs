@@ -1,6 +1,7 @@
 //! Host Adapter launcher contract (Windows).
 //! Scripts are PowerShell open/focus helpers; tests are path + text contracts
-//! (no live herdr). Manual: second open-board focuses the same Tasks board.
+//! (no live herdr). Manual: second open-board focuses the same tab's Tasks board,
+//! and another tab opens its own.
 #![cfg(windows)]
 
 use std::fs;
@@ -56,7 +57,7 @@ if ($args.Count -ge 2 -and $args[0] -eq 'pane' -and $args[1] -eq 'list') {
     & $env:ComSpec /c exit 7
     return
   }
-  if (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) {
+  if ((Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) -or (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'other-tab'))) {
     Get-Content -LiteralPath (Join-Path $env:STUB_ROOT 'existing.json') -Raw
   } else {
     Get-Content -LiteralPath (Join-Path $env:STUB_ROOT 'empty.json') -Raw
@@ -70,11 +71,11 @@ if ($args.Count -ge 2 -and $args[0] -eq 'pane' -and $args[1] -eq 'list') {
         fs::write(
             &tsk_stub,
             r#"if ($args[0] -eq '--find-board-pane') {
-  if (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) { Write-Output 'w0:p2' }
+  if ((Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) -and -not (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'other-tab'))) { Write-Output 'w0:p2' }
   return
 }
 if ($args[0] -eq '--find-board-tab') {
-  if (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) { Write-Output 'w0:t2' }
+  if ((Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'existing')) -and -not (Test-Path -LiteralPath (Join-Path $env:STUB_ROOT 'other-tab'))) { Write-Output 'w0:t2' }
   return
 }
 "#,
@@ -107,7 +108,7 @@ if ($args[0] -eq '--find-board-tab') {
     }
 
     fn run(&self, mode: &str) -> std::process::Output {
-        if mode == "existing" || mode == "list-failure" {
+        if mode == "existing" || mode == "list-failure" || mode == "other-tab" {
             fs::write(self.root.join(mode), b"").expect("stub mode marker");
         }
         self.command(&open_board_path(), mode)
@@ -224,6 +225,14 @@ fn open_board_has_idempotent_focus_list_logic() {
         active.contains("target/release/tsk") || active.contains("TSK_BIN"),
         "open-board must locate plugin binary relative to script (or TSK_BIN)"
     );
+    assert!(
+        active.contains("HERDR_TAB_ID"),
+        "open-board must require the invoking tab so board lookup stays inside it"
+    );
+    assert!(
+        !active.contains("tab focus"),
+        "open-board must never navigate tabs: each tab keeps its own board"
+    );
 }
 
 #[test]
@@ -238,8 +247,30 @@ fn open_board_focuses_an_existing_board_using_native_exit_status() {
     );
     assert_eq!(
         launcher.calls().replace("\r\n", "\n"),
-        "pane list --workspace w0\ntab focus w0:t2\nplugin pane focus w0:p2\n"
+        "pane list --workspace w0\nplugin pane focus w0:p2\n"
     );
+}
+
+#[test]
+fn open_board_opens_a_new_pane_when_only_another_tab_has_a_board() {
+    let launcher = Launcher::new();
+    let output = launcher.run("other-tab");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = launcher.calls().replace("\r\n", "\n");
+    assert!(calls.starts_with("pane list --workspace w0\n"), "{calls}");
+    assert!(!calls.contains("plugin pane focus"), "{calls}");
+    assert!(!calls.contains("tab focus"), "{calls}");
+    let open = calls
+        .lines()
+        .find(|line| line.starts_with("plugin pane open "))
+        .expect("open call");
+    assert!(open.contains("--target-pane w0:p1"), "{open}");
+    assert!(open.contains("--placement split"), "{open}");
 }
 
 #[test]
@@ -308,9 +339,10 @@ fn open_board_opens_in_the_invoking_tab_when_absent() {
     );
     let calls = launcher.calls().replace("\r\n", "\n");
     assert!(
-        calls.starts_with("pane list --workspace w0\ntab focus w0:t1\n"),
+        calls.starts_with("pane list --workspace w0\nplugin pane open "),
         "{calls}"
     );
+    assert!(!calls.contains("tab focus"), "{calls}");
     let open = calls
         .lines()
         .find(|line| line.starts_with("plugin pane open "))

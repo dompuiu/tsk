@@ -1,6 +1,7 @@
 //! Host Adapter launcher contract.
 //! Scripts are bash open/focus helpers; tests are path + mode + text contracts
-//! (no live herdr). Manual: second open-board focuses the same Tasks board.
+//! (no live herdr). Manual: second open-board focuses the same tab's Tasks board,
+//! and another tab opens its own.
 #![cfg(unix)]
 
 use std::fs;
@@ -49,27 +50,35 @@ impl Launcher {
 printf '%s\n' "$*" >> "$STUB_ROOT/calls.log"
 if [ "$1" = pane ] && [ "$2" = list ]; then
   [ "${STUB_MODE:-}" != list-failure ] || exit 1
-  if [ "${STUB_MODE:-}" = missing-tab ]; then
-    printf '%s' '{"result":{"panes":[{"pane_id":"w0:p2","label":"tsk"}]}}'
-    exit 0
-  fi
   if [ "$3" = --workspace ] && [ "$4" = w0 ]; then
-    if [ "${STUB_MODE:-}" = existing ] || [ "${STUB_MODE:-}" = focus-failure ] || [ "${STUB_MODE:-}" = tab-focus-failure ] || [ -f "$STUB_ROOT/opened" ]; then
-      printf '%s' '{"result":{"panes":[{"pane_id":"w0:p2","workspace_id":"w0","tab_id":"w0:t2","label":"tsk"}]}}'
-    else
-      printf '%s' '{"result":{"panes":[]}}'
-    fi
+    case "${STUB_MODE:-}" in
+      existing|focus-failure)
+        printf '%s' "{\"result\":{\"panes\":[{\"pane_id\":\"w0:p2\",\"workspace_id\":\"w0\",\"tab_id\":\"${HERDR_TAB_ID}\",\"label\":\"tsk\"}]}}"
+        ;;
+      other-tab)
+        printf '%s' '{"result":{"panes":[{"pane_id":"w0:p2","workspace_id":"w0","tab_id":"w0:t2","label":"tsk"}]}}'
+        ;;
+      missing-tab)
+        printf '%s' '{"result":{"panes":[{"pane_id":"w0:p2","workspace_id":"w0","label":"tsk"}]}}'
+        ;;
+      *)
+        if [ -f "$STUB_ROOT/opened" ]; then
+          printf '%s' "{\"result\":{\"panes\":[{\"pane_id\":\"w0:p2\",\"workspace_id\":\"w0\",\"tab_id\":\"${HERDR_TAB_ID}\",\"label\":\"tsk\"}]}}"
+        else
+          printf '%s' '{"result":{"panes":[]}}'
+        fi
+        ;;
+    esac
   else
     printf '%s' '{"result":{"panes":[{"pane_id":"w9:p1","workspace_id":"w9","tab_id":"w9:t1","label":"tsk"},{"pane_id":"w0:p2","workspace_id":"w0","tab_id":"w0:t2","label":"tsk"}]}}'
   fi
 elif [ "$1" = tab ] && [ "$2" = focus ]; then
-  [ "${STUB_MODE:-}" != tab-focus-failure ] || exit 1
   printf '%s' "$3" > "$STUB_ROOT/visible-tab"
 elif [ "$1" = plugin ] && [ "$2" = pane ] && [ "$3" = focus ]; then
   [ "${STUB_MODE:-}" != focus-failure ] || exit 1
 elif [ "$1" = plugin ] && [ "$2" = pane ] && [ "$3" = open ]; then
   touch "$STUB_ROOT/opened"
-  printf '%s' 'w0:t1' > "$STUB_ROOT/opened-tab"
+  printf '%s' "$HERDR_TAB_ID" > "$STUB_ROOT/opened-tab"
   printf '%s' "${HERDR_PLUGIN_CONTEXT_JSON:-}" > "$STUB_ROOT/open-context.json"
 fi
 "#,
@@ -137,14 +146,40 @@ impl Drop for Launcher {
 }
 
 #[test]
-fn open_board_focuses_current_workspace_board_even_in_another_tab() {
+fn open_board_focuses_only_the_invoking_tabs_board() {
     let launcher = Launcher::new();
     let output = launcher.run("existing", Some("w0"));
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         launcher.calls(),
-        "pane list --workspace w0\ntab focus w0:t2\nplugin pane focus w0:p2\n"
+        "pane list --workspace w0\nplugin pane focus w0:p2\n"
     );
+}
+
+#[test]
+fn open_board_opens_a_new_pane_when_only_another_tab_has_a_board() {
+    let launcher = Launcher::new();
+    let output = launcher.run("other-tab", Some("w0"));
+    assert!(output.status.success(), "{output:?}");
+    let calls = launcher.calls();
+    assert!(calls.starts_with("pane list --workspace w0\n"), "{calls}");
+    assert!(!calls.contains("plugin pane focus"), "{calls}");
+    assert!(!calls.contains("tab focus"), "{calls}");
+    let open = calls
+        .lines()
+        .find(|line| line.starts_with("plugin pane open "))
+        .expect("open call");
+    assert!(open.contains("--target-pane w0:p1"), "{open}");
+}
+
+#[test]
+fn open_board_pane_without_tab_id_opens_a_board_for_the_invoking_tab() {
+    let launcher = Launcher::new();
+    let output = launcher.run("missing-tab", Some("w0"));
+    assert!(output.status.success(), "{output:?}");
+    let calls = launcher.calls();
+    assert!(!calls.contains("plugin pane focus"), "{calls}");
+    assert!(calls.contains("plugin pane open "), "{calls}");
 }
 
 #[test]
@@ -181,40 +216,16 @@ fn open_board_opens_locally_when_only_other_workspaces_have_boards() {
 }
 
 #[test]
-fn open_board_missing_tab_refuses_without_creating_a_duplicate() {
-    let launcher = Launcher::new();
-    let output = launcher.run("missing-tab", Some("w0"));
-    assert!(!output.status.success(), "{output:?}");
-    assert_eq!(launcher.calls(), "pane list --workspace w0\n");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("board tab"));
-}
-
-#[test]
-fn open_board_tab_focus_failure_does_not_focus_or_duplicate_the_board() {
-    let launcher = Launcher::new();
-    let output = launcher.run("tab-focus-failure", Some("w0"));
-    assert!(!output.status.success(), "{output:?}");
-    assert_eq!(
-        launcher.calls(),
-        "pane list --workspace w0\ntab focus w0:t2\n"
-    );
-}
-
-#[test]
-fn open_board_stale_focus_falls_back_to_a_visible_board_in_the_invoking_tab() {
+fn open_board_focus_failure_opens_a_replacement_in_the_invoking_tab() {
     let launcher = Launcher::new();
     let output = launcher.run("focus-failure", Some("w0"));
     assert!(output.status.success(), "{output:?}");
     let calls = launcher.calls();
-    assert_eq!(
-        read(&launcher.root.join("visible-tab")),
-        read(&launcher.root.join("opened-tab")),
-        "the replacement must be visible, not merely focused on the server"
-    );
     assert!(
-        calls.contains("plugin pane focus w0:p2\ntab focus w0:t1\nplugin pane open "),
+        calls.contains("plugin pane focus w0:p2\nplugin pane open "),
         "{calls}"
     );
+    assert!(!calls.contains("tab focus"), "{calls}");
     let open = calls
         .lines()
         .find(|line| line.starts_with("plugin pane open "))
@@ -384,6 +395,14 @@ fn open_board_has_idempotent_focus_list_logic() {
     assert!(
         active.contains("target/release/tsk") || active.contains("TSK_BIN"),
         "open-board must locate plugin binary relative to script (or TSK_BIN)"
+    );
+    assert!(
+        active.contains("HERDR_TAB_ID"),
+        "open-board must require the invoking tab so board lookup stays inside it"
+    );
+    assert!(
+        !active.contains("tab focus"),
+        "open-board must never navigate tabs: each tab keeps its own board"
     );
 
     // No bare python3 dependency for focus logic.

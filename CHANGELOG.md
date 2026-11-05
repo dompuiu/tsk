@@ -25,6 +25,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `tsk migrate` moves a store still in `~/.tsk` to the XDG data and settings directories.
 - `ctrl+x` twice in the project picker deletes every task in the project and drops it from the lists; `tsk project delete <name> --yes` does the same headless.
 
+### Changed
+
+- `prefix+t` opens a board in each Herdr tab and focuses only the invoking tab's board, instead of jumping to a board in another tab.
+
 ### Fixed
 
 - `tsk setup herdr` keeps your shortcut when a shell command already invokes the plugin action, and no longer adds the default chord beside it.
