@@ -447,6 +447,10 @@ pub enum BoardIntent {
     PageScrollUp,
     /// Task page view mode: scroll the notes body one wrapped row down.
     PageScrollDown,
+    /// `PageUp` on the task page: scroll the shared body one painted viewport up.
+    PageJumpUp,
+    /// `PageDown` on the task page: scroll the shared body one painted viewport down.
+    PageJumpDown,
     /// Mouse-wheel scrolling is content-only: it never enters step-cursor navigation
     /// when the shared page body has reached an edge.
     PageWheelScrollUp,
@@ -1208,6 +1212,12 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::Navigation,
+            "page up / page down",
+            "scroll a full screen (task page)",
+            "move view notes steps",
+        ),
+        help_binding(
+            HelpGroup::Navigation,
             "←/h · →/l",
             "slide board / task panes (wide)",
             "move view slider",
@@ -1685,11 +1695,16 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                 Some(BoardIntent::ConfirmEditNext)
             } else if key.code == KeyCode::Enter && key.modifiers.is_empty() {
                 Some(BoardIntent::ConfirmEdit)
-            } else if matches!(key.code, KeyCode::Up | KeyCode::Down) && key.modifiers.is_empty() {
-                Some(if key.code == KeyCode::Up {
-                    BoardIntent::PageScrollUp
-                } else {
-                    BoardIntent::PageScrollDown
+            } else if matches!(
+                key.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
+            ) && key.modifiers.is_empty()
+            {
+                Some(match key.code {
+                    KeyCode::PageUp => BoardIntent::PageJumpUp,
+                    KeyCode::PageDown => BoardIntent::PageJumpDown,
+                    KeyCode::Up => BoardIntent::PageScrollUp,
+                    _ => BoardIntent::PageScrollDown,
                 })
             } else if key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key
@@ -2359,6 +2374,8 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         }
         KeyCode::Up | KeyCode::Char('k') if !extra => Some(BoardIntent::PageScrollUp),
         KeyCode::Down | KeyCode::Char('j') if !extra => Some(BoardIntent::PageScrollDown),
+        KeyCode::PageUp if !extra => Some(BoardIntent::PageJumpUp),
+        KeyCode::PageDown if !extra => Some(BoardIntent::PageJumpDown),
         _ => None,
     }
 }

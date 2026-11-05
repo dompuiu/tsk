@@ -3464,6 +3464,29 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
+        BoardIntent::PageJumpUp | BoardIntent::PageJumpDown => {
+            if model.focused_surface() != FocusedSurface::Task {
+                return Ok(IntentOutcome::None);
+            }
+            let Some(form) = model.form.as_mut().filter(|form| form.is_task()) else {
+                return Ok(IntentOutcome::None);
+            };
+            let page = form.steps.window_rows.get().max(1);
+            let horizon = form.notes_max_scroll.get();
+            let target = if intent == BoardIntent::PageJumpDown {
+                form.notes_scroll.saturating_add(page).min(horizon)
+            } else {
+                form.notes_scroll.saturating_sub(page)
+            };
+            if target != form.notes_scroll {
+                // A page key takes over from automatic caret or block following until the next
+                // edit, the way the wheel and scrollbar already do. A key at either end moves
+                // nothing and must not latch that override.
+                form.manual_page_scroll = true;
+                form.notes_scroll = target;
+            }
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::PeekDetail => {
             let Some(id) = model.selected_id() else {
                 return Ok(IntentOutcome::None);

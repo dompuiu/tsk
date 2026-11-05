@@ -1444,6 +1444,8 @@ pub fn apply_board_intent_with_save_recovery(
             | BoardIntent::CollapseDetail
             | BoardIntent::PageScrollUp
             | BoardIntent::PageScrollDown
+            | BoardIntent::PageJumpUp
+            | BoardIntent::PageJumpDown
             | BoardIntent::PageWheelScrollUp
             | BoardIntent::PageWheelScrollDown
             | BoardIntent::ToggleDoneDrawer

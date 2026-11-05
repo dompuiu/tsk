@@ -118,6 +118,7 @@ In view mode, before you start an edit:
 | --- | --- |
 | Close the page | `Esc` |
 | Move among steps (`↓` selects the first); otherwise scroll | `↑` / `↓` or `k` / `j` |
+| Scroll a full screen | `PageUp` / `PageDown` |
 | Walk the top line, options or checks, replies, steps, **+ step**, and the paper trail | `Tab` / `shift+Tab` |
 | Check / uncheck the selected step | `Enter` |
 | Add a step below the selected one, else at the end | `ctrl+a` |
@@ -159,6 +160,7 @@ On a blocked page or a review:
 | Title: move to Notes | `Enter` |
 | Notes: new line | `Enter` |
 | Notes: move through wrapped lines | `↑` / `↓` |
+| Step editor: scroll the page | `PageUp` / `PageDown` |
 | New step: save it and open the next row | `Enter` |
 | Existing step: keep the rename in this edit | `Enter` |
 | Add a step from a selected step, **+ step**, the Scope row, or a selected Thread | `ctrl+a` |
