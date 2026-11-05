@@ -24,6 +24,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `[merge] method` also shapes a local land: a merge commit, one squash commit, or the branch's commits replayed onto the base.
 - `tsk migrate` moves a store still in `~/.tsk` to the XDG data and settings directories.
 - `ctrl+x` twice in the project picker deletes every task in the project and drops it from the lists; `tsk project delete <name> --yes` does the same headless.
+- `PageUp` / `PageDown` scroll a long task page by a full screen.
 
 ### Changed
 

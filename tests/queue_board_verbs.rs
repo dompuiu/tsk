@@ -4428,6 +4428,54 @@ fn page_scroll_intents_are_session_only_and_bounded() {
     assert_eq!(domain.get(id).expect("task").revision, rev_before);
 }
 
+/// `PageUp` / `PageDown` jump a painted viewport on a long task page and clamp at both ends.
+///
+/// Arrow keys scroll one wrapped row; reading a task should not need hundreds of presses.
+#[test]
+fn page_keys_scroll_a_long_task_page_by_a_viewport() {
+    let long = (0..12)
+        .map(|index| format!("{index}{}", "w".repeat(200)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut domain, mut model, id) = board_with_steps("long page", Some(&long), &[]);
+    let rev_before = domain.get(id).expect("task").revision;
+
+    let down = map_key(BoardInputMode::TaskPage, press(KeyCode::PageDown)).expect("PageDown maps");
+    assert_eq!(down, BoardIntent::PageJumpDown);
+    apply_intent(&mut domain, &mut model, down.clone(), None).expect("page down");
+    let page = model.page_scroll();
+    assert!(
+        page > 1,
+        "PageDown must move a viewport, not one wrapped row: {page}"
+    );
+
+    let up = map_key(BoardInputMode::TaskPage, press(KeyCode::PageUp)).expect("PageUp maps");
+    assert_eq!(up, BoardIntent::PageJumpUp);
+    apply_intent(&mut domain, &mut model, up, None).expect("page up");
+    assert_eq!(model.page_scroll(), 0, "PageUp returns to the top");
+
+    for _ in 0..100 {
+        apply_intent(&mut domain, &mut model, down.clone(), None).expect("page down");
+    }
+    let bottom = model.page_scroll();
+    assert!(bottom > page, "the page must reach past its first viewport");
+    for _ in 0..10 {
+        apply_intent(&mut domain, &mut model, down.clone(), None).expect("page down");
+    }
+    assert_eq!(model.page_scroll(), bottom, "PageDown clamps at the bottom");
+    assert_eq!(domain.get(id).expect("task").revision, rev_before);
+
+    // The inline step editor scrolls its overflowing task page with the same page keys.
+    assert_eq!(
+        map_key(BoardInputMode::EditStep, press(KeyCode::PageDown)),
+        Some(BoardIntent::PageJumpDown)
+    );
+    assert_eq!(
+        map_key(BoardInputMode::EditStep, press(KeyCode::PageUp)),
+        Some(BoardIntent::PageJumpUp)
+    );
+}
+
 /// The bottom of a WRAPPING note must be reachable by scrolling.
 ///
 /// The sibling test above uses `"line one\nline two"`, two short lines that never wrap at any
