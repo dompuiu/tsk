@@ -2122,11 +2122,11 @@ fn a_populated_v6_store_migrates_and_keeps_tsk_json_v6() {
     }
 }
 
-/// Unreleased dev builds marked their stores 8 to 18. Those numbers are refused like any newer
+/// Unreleased dev builds marked their stores 9 to 18. Those numbers are refused like any newer
 /// format, never read as v7, and the refusal writes nothing.
 #[test]
-fn dev_formats_8_to_18_are_refused_without_a_write() {
-    for version in 8..=18u32 {
+fn dev_formats_9_to_18_are_refused_without_a_write() {
+    for version in 9..=18u32 {
         let dir = temp_state_dir();
         let _guard = TempDirGuard(dir.clone());
         let mut document: serde_json::Value =

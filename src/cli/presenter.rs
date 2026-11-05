@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use super::CliOutput;
 use crate::cli::add::{AddError, FlagAddResult};
 use crate::cli::archive::{
-    ArchiveCliError, ArchiveResult, ProjectResult, ProjectTitleError, ProjectTitleResult,
+    ArchiveCliError, ArchiveResult, ProjectDeleted, ProjectResult, ProjectTitleError,
+    ProjectTitleResult,
 };
 use crate::cli::checks::{ChecksError, ChecksResult};
 use crate::cli::edit::{EditError, EditResult};
@@ -150,6 +151,7 @@ const PROJECT_USAGE: &[&str] = &[
     "tsk project unarchive <name> [--state-dir <dir>]",
     "tsk project title <name> <title> [--state-dir <dir>]",
     "tsk project title <name> --clear [--state-dir <dir>]",
+    "tsk project delete <name> --yes [--state-dir <dir>]",
 ];
 const TRASH_USAGE: &[&str] = &["tsk trash restore <task> [--state-dir <dir>]"];
 const BACKUP_USAGE: &[&str] = &[
@@ -2628,8 +2630,7 @@ pub fn archive_usage(verb: &str, reason: &str) -> CliOutput {
 pub fn project_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(PROJECT_USAGE),
-        purpose: "Archive, unarchive, or title a whole project. Its tasks keep their statuses."
-            .into(),
+        purpose: "Archive, unarchive, or title a whole project. Its tasks keep their statuses. Delete removes the project and every task it carries.".into(),
         groups: vec![
             group(
                 "Arguments",
@@ -2650,12 +2651,17 @@ pub fn project_help() -> CliOutput {
                         "title",
                         "show the project under <title>, or its folder name with --clear",
                     ),
+                    (
+                        "delete",
+                        "delete every task in the project, whatever its status, and drop the archived project",
+                    ),
                 ],
             ),
             group(
                 "Options",
                 &[
                     ("--clear", "with title: remove the title"),
+                    ("--yes", "confirm a project delete"),
                     ("--state-dir <dir>", "use another board store"),
                 ],
             ),
@@ -2664,15 +2670,17 @@ pub fn project_help() -> CliOutput {
             "tsk project archive atlas".into(),
             "tsk project unarchive atlas".into(),
             "tsk project title ~/sites/a/wp-content \"Site A\"".into(),
+            "tsk project delete atlas --yes".into(),
         ],
         refusals: vec![
             "no project named <name> has tasks".into(),
             "project <name> is ambiguous: <paths>".into(),
             "title: unknown-project, title-taken, invalid-title".into(),
+            "deleting a project needs --yes".into(),
         ],
         exit: exit_line(
-            "project archived, unarchived, or titled, or already was",
-            Some("no project of that name has tasks, the name is ambiguous, or the title refuses"),
+            "project archived, unarchived, titled, deleted, or already was",
+            Some("no project of that name has tasks, the name is ambiguous, a title refuses, or a delete lacks --yes"),
             true,
         ),
     })
@@ -2680,6 +2688,23 @@ pub fn project_help() -> CliOutput {
 
 pub fn project_usage(reason: &str) -> CliOutput {
     usage_error("project", reason, PROJECT_USAGE)
+}
+
+pub fn project_deleted(result: ProjectDeleted) -> CliOutput {
+    let noun = if result.tasks == 1 { "task" } else { "tasks" };
+    let detail = if result.tasks == 0 {
+        "no tasks".to_string()
+    } else {
+        format!("{} {noun}", result.tasks)
+    };
+    CliOutput {
+        stdout: format!(
+            "deleted project {} \u{b7} {detail}\n",
+            terminal_text(&result.name)
+        ),
+        stderr: String::new(),
+        code: 0,
+    }
 }
 
 pub fn project_titled(result: ProjectTitleResult) -> CliOutput {

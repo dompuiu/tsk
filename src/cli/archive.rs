@@ -52,6 +52,58 @@ pub struct ProjectResult {
     pub archived: bool,
 }
 
+/// A successful project delete: its short (basename) name and the tasks it soft-deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDeleted {
+    pub name: String,
+    pub tasks: usize,
+}
+
+/// Delete one project by `!p` name rules: soft-delete every task it carries, then drop its
+/// archived record. Refuses a name that carries neither.
+pub fn run_project_delete(
+    name: String,
+    state_dir: Option<PathBuf>,
+) -> Result<ProjectDeleted, ArchiveCliError> {
+    let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
+    store
+        .locked_transition_if_changed(|domain: &mut DomainState| {
+            let resolved = match crate::scope::resolve_permissive_project_path(
+                &name,
+                domain,
+                Some(&crate::context::snapshot_from_env()),
+            ) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return Ok((
+                        Err(ArchiveCliError::UnknownProject(error.message(&name))),
+                        false,
+                    ));
+                }
+            };
+            match domain.delete_project(&resolved) {
+                Ok(deletion) => {
+                    let name = domain.project_name(&resolved);
+                    // The domain refuses the only no-op case, so every success is a change.
+                    Ok((
+                        Ok(ProjectDeleted {
+                            name,
+                            tasks: deletion.tasks,
+                        }),
+                        true,
+                    ))
+                }
+                Err(_) => Ok((
+                    Err(ArchiveCliError::UnknownProject(format!(
+                        "no project named {name} has tasks"
+                    ))),
+                    false,
+                )),
+            }
+        })
+        .map_err(ArchiveCliError::Store)?
+}
+
 /// Archive or unarchive one project by `!p` name rules (basename case-insensitive or
 /// a `/path` verbatim). Idempotent: the domain verb's bool is the `changed` flag.
 pub fn run_project(
