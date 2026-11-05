@@ -2271,6 +2271,62 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_board_open_seeds_the_settings_file_in_the_config_directory() {
+        let _lock = env_lock();
+        let root = temp_dir("seed-split");
+        let _guard = TempDirGuard(root.clone());
+        let names = [
+            "HOME",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "TSK_STATE_DIR",
+            "TSK_CONFIG_DIR",
+        ];
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> = names
+            .iter()
+            .map(|name| (*name, env::var_os(name)))
+            .collect();
+        let home = root.join("home");
+        let data = root.join("data");
+        let config = root.join("config");
+        fs::create_dir_all(&home).expect("home");
+        // SAFETY: single-threaded under ENV_LOCK for the duration of this test.
+        env::set_var("HOME", &home);
+        env::set_var("XDG_DATA_HOME", &data);
+        env::set_var("XDG_CONFIG_HOME", &config);
+        env::remove_var("TSK_STATE_DIR");
+        env::remove_var("TSK_CONFIG_DIR");
+
+        let store = data.join("tsk");
+        fs::create_dir_all(&store).expect("store");
+        fs::write(store.join(STATE_FILE), "{}").expect("store file");
+        assert_eq!(default_state_dir(), store);
+
+        assert!(crate::agents::seed_on_open(&store).expect("seed"));
+        let seeded = config.join("tsk").join(CONFIG_FILE);
+        assert!(
+            seeded.exists(),
+            "the starter lands in the settings directory"
+        );
+        assert!(
+            !store.join(CONFIG_FILE).exists(),
+            "no config.toml beside the store"
+        );
+        // The same resolver reads it back for profiles.
+        assert!(crate::agents::read_config(&store)
+            .expect("read settings")
+            .is_some());
+
+        for (name, value) in saved {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_keeps_data_in_localappdata_and_settings_in_appdata() {
