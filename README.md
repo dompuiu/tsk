@@ -14,9 +14,10 @@ your agent the task number when you are ready. New tasks start in the open inbox
 
 ![The tsk board beside an agent working on the selected Redis-to-Postgres migration task](docs/images/board-in-herdr.png)
 
-In Herdr, `prefix+t` opens or focuses your workspace's board, even across tabs.
-Other workspaces keep their own view of the same tasks. `prefix+a` opens quick capture.
-In Rex, `alt+t` opens the board beside the focused pane and `alt+a` opens quick capture.
+In Herdr, `prefix+t` opens or focuses your tab's board. Each tab keeps its own
+board; other workspaces and tabs keep their own view of the same tasks. `prefix+a`
+opens quick capture. In Rex, `alt+t` opens the board beside the focused pane and
+`alt+a` opens quick capture.
 Click a task's `T` number to copy it, then paste it into your agent conversation.
 
 ### Room to think

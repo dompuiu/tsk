@@ -125,11 +125,15 @@ fn headless_main(args: Vec<String>) -> ExitCode {
 }
 
 /// Read herdr `pane list` JSON; print the first Tasks pane or its tab, or exit 1.
+///
+/// Lookup is scoped to `HERDR_TAB_ID`, so each Herdr tab finds only its own board.
 fn find_board_main(tab: bool) -> ExitCode {
+    let invoking_tab = std::env::var(tsk_tui::board_pane::TAB_ENV).ok();
+    let tab_filter = invoking_tab.as_deref().filter(|tab| !tab.is_empty());
     let result = if tab {
-        tsk_tui::board_pane::find_board_tab_from_stdin()
+        tsk_tui::board_pane::find_board_tab_from_stdin(tab_filter)
     } else {
-        tsk_tui::find_board_pane_from_stdin()
+        tsk_tui::board_pane::find_board_pane_from_stdin(tab_filter)
     };
     match result {
         Ok(Some(id)) => {

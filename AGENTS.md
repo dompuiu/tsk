@@ -420,12 +420,12 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 - `tsk setup herdr` registers embedded plugin assets from `src/setup.rs` using the stable
   invoked executable path, not a canonicalized Cellar path. Re-running does not duplicate
   bindings; a noninteractive conflict aborts before writes. Herdr 0.9+ required.
-- `prefix+t` opens or focuses the board within the invoking workspace, across tabs.
-  `scripts/open-board.sh` scopes lookup with `HERDR_WORKSPACE_ID`, activates
-  `HERDR_TAB_ID` before creation, and anchors the split to `HERDR_PANE_ID` (Herdr rejects
-  `--workspace` for split placement). It refuses missing context or a failed pane
-  listing. On reuse call `herdr tab focus` before `plugin pane focus`; API `focused: true`
-  alone is not visible-navigation evidence, confirm the displayed tab.
+- `prefix+t` opens or focuses the board in the invoking tab; each tab keeps its own board.
+  `scripts/open-board.sh` scopes lookup with `HERDR_WORKSPACE_ID` and `HERDR_TAB_ID` (the
+  finder refuses a board outside the tab), and anchors creation to `HERDR_PANE_ID` (Herdr
+  rejects `--workspace` for split placement). It never calls `herdr tab focus`: a board in
+  another tab must not move focus. It refuses missing context or a failed pane listing, and
+  a failed focus of this tab's board falls back to opening there.
 - Pane label matching is exact against `board_pane::BOARD_PANE_LABEL`; the manifest pane
   title must equal it.
 - `tsk setup --skill-states` and `tsk setup herdr --check` are installer probes: the site
