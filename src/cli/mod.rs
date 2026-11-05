@@ -572,6 +572,12 @@ fn run_project(args: Vec<String>) -> CliOutput {
                 Err(error) => presenter::project_title_rejected(error),
             };
         }
+        parser::ProjectAction::Delete { name } => {
+            return match archive::run_project_delete(name, input.state_dir) {
+                Ok(result) => presenter::project_deleted(result),
+                Err(error) => presenter::archive_rejected(error, "project"),
+            }
+        }
     };
     match archive::run_project(name, archive, input.state_dir) {
         Ok(result) => presenter::project_archived(result, verb),

@@ -3031,8 +3031,8 @@ const PALETTE_FOOTER: &[VerbEntry<'static>] = &[
 ];
 
 /// Legend footer for the project-scope card, with `s` naming the current order (`sort`).
-/// A narrow card sheds `↑↓ move`, then the sort, then `enter choose`, keeping the seat that
-/// is not guessable (`ctrl+f archive`) beside the way out.
+/// A narrow card sheds `↑↓ move`, then `enter`, then the sort, then `ctrl+x delete`; the
+/// seats that are not guessable (`ctrl+f archive`, `esc`) stay longest.
 /// AC-40: the picker's archived tab has its own verbs. `ctrl+f` still unarchives, it is
 /// simply not advertised beside the chord that reads as the undo of filing.
 fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
@@ -3052,6 +3052,11 @@ fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
         label: "title",
         shed: 2,
     };
+    let delete = VerbEntry {
+        key: "ctrl+x",
+        label: "delete",
+        shed: 1,
+    };
     if archived_tab {
         return vec![
             VerbEntry {
@@ -3066,6 +3071,7 @@ fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
             },
             sort,
             title,
+            delete,
             esc,
         ];
     }
@@ -3073,12 +3079,12 @@ fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
         VerbEntry {
             key: "↑↓",
             label: "move",
-            shed: 3,
+            shed: 4,
         },
         VerbEntry {
             key: "enter",
             label: "choose",
-            shed: 1,
+            shed: 3,
         },
         sort,
         VerbEntry {
@@ -3087,6 +3093,7 @@ fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
             shed: 0,
         },
         title,
+        delete,
         esc,
     ]
 }

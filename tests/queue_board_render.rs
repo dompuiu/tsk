@@ -5965,7 +5965,7 @@ fn archived_tab_verb_bar_advertises_ctrl_u_enter_esc() {
         .join("\n");
     assert!(
         frame.contains(
-            "ctrl+u unarchive \u{b7} enter open \u{b7} s sort: name A–Z \u{b7} ctrl+e title \u{b7} esc close"
+            "ctrl+u unarchive \u{b7} enter open \u{b7} s sort: name A–Z \u{b7} ctrl+x delete \u{b7} esc close"
         ),
         "the archived tab's footer reads its own verbs:\n{frame}"
     );
@@ -5994,13 +5994,13 @@ fn project_picker_main_tab_advertises_archive_without_leaking_to_thread_picker()
     let main = board_rows(&model, 80, 24).join("\n");
     assert!(
         main.contains(
-            "enter choose \u{b7} s sort: name A–Z \u{b7} ctrl+f archive \u{b7} ctrl+e title \u{b7} esc close"
+            "s sort: name A–Z \u{b7} ctrl+f archive \u{b7} ctrl+e title \u{b7} ctrl+x delete \u{b7} esc close"
         ),
-        "main project picker must advertise archive and title (↑↓ move sheds first at 80):\n{main}"
+        "main project picker must advertise archive, title, and delete (↑↓ move sheds first at 80):\n{main}"
     );
 
-    // The compact card caps near 34 content columns: the legend keeps only the seat that
-    // is not guessable, rather than clipping the archive seat mid-word.
+    // The compact card caps near 34 content columns: the legend keeps only the seats that
+    // are not guessable, rather than clipping an archive seat mid-word.
     let compact = board_rows(&model, 40, 10).join("\n");
     let legend_row = compact
         .lines()

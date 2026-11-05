@@ -6866,6 +6866,395 @@ fn ctrl_f_in_the_picker_archives_the_selected_project_and_keeps_the_picker_open(
 }
 
 #[test]
+fn ctrl_x_maps_to_project_delete_only_in_the_picker() {
+    assert_eq!(
+        map_key(BoardInputMode::ProjectPicker, ctrl(KeyCode::Char('x'))),
+        Some(BoardIntent::ProjectDelete)
+    );
+    assert_eq!(
+        map_key(BoardInputMode::Normal, ctrl(KeyCode::Char('x'))),
+        Some(BoardIntent::SoftDelete),
+        "the board's delete verb is unchanged"
+    );
+}
+
+/// Walk the open picker's main list onto `path`, the way the ctrl+f tests do.
+fn picker_walk_to(domain: &mut DomainState, model: &mut BoardModel, path: &str) -> usize {
+    let target = ProjectScopeOption::Project(PathBuf::from(path));
+    for _ in 0..model.project_options().len() {
+        let index = model.project_picker_index().expect("picker index");
+        if model.project_options()[index] == target {
+            break;
+        }
+        apply_intent(domain, model, BoardIntent::ProjectPickerNext, None).expect("next");
+    }
+    let index = model.project_picker_index().expect("picker index");
+    assert_eq!(model.project_options()[index], target, "walked onto {path}");
+    index
+}
+
+#[test]
+fn ctrl_x_in_the_picker_arms_then_deletes_the_project_and_undo_restores_its_tasks() {
+    let mut domain = DomainState::new();
+    let here = domain
+        .create(
+            "in app",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create here");
+    let other = "/repos/other";
+    let open = domain
+        .create(
+            "other open",
+            None,
+            project(other),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create open");
+    let done = domain
+        .create(
+            "other done",
+            None,
+            project(other),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create done");
+    domain.set_status(done, HumanStatus::Done).expect("done");
+    let archived = domain
+        .create(
+            "other archived",
+            None,
+            project(other),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create archived");
+    domain.archive_task(archived).expect("archive task");
+
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open picker");
+    picker_walk_to(&mut domain, &mut model, other);
+
+    // The first press only arms: nothing is deleted, and the row says how to finish.
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("arm");
+    for id in [open, done, archived] {
+        assert!(
+            !domain.get(id).expect("task").soft_deleted,
+            "arming deletes nothing"
+        );
+    }
+    assert!(
+        model
+            .message()
+            .is_some_and(|message| message.contains("press ctrl+x again")),
+        "the row asks for the second press: {:?}",
+        model.message()
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("delete");
+    for id in [open, done, archived] {
+        assert!(
+            domain.get(id).expect("task").soft_deleted,
+            "every status goes, done and archived included"
+        );
+    }
+    assert!(
+        !domain.get(here).expect("task").soft_deleted,
+        "another project is untouched"
+    );
+    assert!(
+        !model
+            .project_options()
+            .contains(&ProjectScopeOption::Project(PathBuf::from(other))),
+        "the project leaves the picker"
+    );
+    assert_eq!(
+        model.input_mode(),
+        BoardInputMode::ProjectPicker,
+        "the picker stays open"
+    );
+    assert!(
+        model
+            .message()
+            .is_some_and(|message| message.contains("deleted other")),
+        "the row reports the delete: {:?}",
+        model.message()
+    );
+
+    // Undo is the board's ctrl+u, reached once the picker is out of the way.
+    apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close picker");
+    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
+    for id in [open, done, archived] {
+        assert!(
+            !domain.get(id).expect("task").soft_deleted,
+            "one undo restores the whole project"
+        );
+    }
+    assert_eq!(
+        domain.get(done).expect("task").status,
+        HumanStatus::Done,
+        "statuses come back as they were"
+    );
+}
+
+#[test]
+fn ctrl_x_arming_does_not_survive_moving_the_picker_cursor() {
+    let mut domain = DomainState::new();
+    let a = domain
+        .create(
+            "in a",
+            None,
+            project("/repos/a"),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create a");
+    let b = domain
+        .create(
+            "in b",
+            None,
+            project("/repos/b"),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create b");
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open picker");
+
+    picker_walk_to(&mut domain, &mut model, "/repos/a");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("arm a");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ProjectPickerNext,
+        None,
+    )
+    .expect("move to b");
+    picker_walk_to(&mut domain, &mut model, "/repos/b");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("press on b");
+
+    assert!(
+        !domain.get(a).expect("task").soft_deleted,
+        "moving off a took its arm down"
+    );
+    assert!(
+        !domain.get(b).expect("task").soft_deleted,
+        "the press on b only arms b"
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("delete b");
+    assert!(
+        domain.get(b).expect("task").soft_deleted,
+        "the second press on b deletes b"
+    );
+    assert!(
+        !domain.get(a).expect("task").soft_deleted,
+        "a was never deleted"
+    );
+}
+
+#[test]
+fn deleting_the_open_project_falls_back_to_the_desk() {
+    let focus = "/repos/focus";
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "focused",
+            None,
+            project(focus),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open picker");
+    picker_walk_to(&mut domain, &mut model, focus);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ConfirmProjectChoice,
+        None,
+    )
+    .expect("open focus");
+    assert_eq!(
+        model.active_project(),
+        Some(Path::new(focus)),
+        "the board is on the project"
+    );
+
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open picker again");
+    picker_walk_to(&mut domain, &mut model, focus);
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("arm");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("delete");
+
+    assert_eq!(
+        model.active_project(),
+        None,
+        "a board on the deleted project falls back to the desk"
+    );
+    assert!(
+        domain.get(id).expect("task").soft_deleted,
+        "its task went with it"
+    );
+}
+
+#[test]
+fn deleting_the_launch_project_says_the_row_stays() {
+    let mut domain = DomainState::new();
+    domain
+        .create(
+            "in app",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open picker");
+    picker_walk_to(&mut domain, &mut model, THIS_REPO);
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("arm");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("delete");
+
+    assert!(
+        model
+            .message()
+            .is_some_and(|message| message.contains("still here as this window's project")),
+        "the launch repo keeps its row, and the row says so: {:?}",
+        model.message()
+    );
+    assert!(
+        model
+            .project_options()
+            .contains(&ProjectScopeOption::Project(PathBuf::from(THIS_REPO))),
+        "every launch repo is offered whether or not it has tasks"
+    );
+}
+
+#[test]
+fn ctrl_x_on_the_archived_tab_deletes_the_project_and_drops_its_record() {
+    let filed = "/repos/filed";
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "filed",
+            None,
+            project(filed),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain.archive_project(filed).expect("archive project");
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open picker");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ProjectPickerSwitchTab,
+        None,
+    )
+    .expect("archived tab");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("arm");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("delete");
+
+    assert!(domain.get(id).expect("task").soft_deleted);
+    assert!(domain.projects().is_empty(), "the archived record goes");
+    assert!(!domain.is_project_archived(filed));
+    assert!(
+        model.archived_project_options().is_empty(),
+        "the archived tab no longer lists it"
+    );
+}
+
+#[test]
+fn deleting_an_archived_project_whose_tasks_are_gone_says_no_tasks() {
+    let filed = "/repos/filed-empty";
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "filed",
+            None,
+            project(filed),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create");
+    domain.archive_project(filed).expect("archive project");
+    domain
+        .soft_delete(id)
+        .expect("the only task is already deleted");
+
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open picker");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::ProjectPickerSwitchTab,
+        None,
+    )
+    .expect("archived tab");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("arm");
+    apply_intent(&mut domain, &mut model, BoardIntent::ProjectDelete, None).expect("delete");
+
+    assert!(
+        domain.projects().is_empty(),
+        "the archived record still goes"
+    );
+    assert_eq!(
+        model.message(),
+        Some("deleted filed-empty \u{b7} no tasks"),
+        "an empty project says so instead of counting zero"
+    );
+}
+
+#[test]
 fn ctrl_f_and_ctrl_u_on_the_archived_tab_unarchive_and_every_task_keeps_its_status() {
     let mut domain = DomainState::new();
     let a = domain

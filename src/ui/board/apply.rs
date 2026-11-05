@@ -29,6 +29,25 @@ use super::model::{
 /// What the row says when an action that aims at the selection is asked for on a board that
 /// has none. One wording, so the same refusal always reads the same way.
 const NO_SELECTION: &str = "select a task first";
+/// `1 task` / `3 tasks`: the one plural rule the project delete messages share.
+fn task_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "task" } else { "tasks" })
+}
+
+/// The project the open picker points at, on whichever tab is showing. `None` for the desk
+/// row and for an empty list.
+fn picker_selected_project(model: &BoardModel) -> Option<ProjectScopeOption> {
+    let picker = model.project_picker.as_ref()?;
+    match picker.tab {
+        PickerTab::Main => picker.options.get(picker.selected).cloned(),
+        PickerTab::Archived => picker
+            .archived
+            .get(picker.archived_selected)
+            .cloned()
+            .map(ProjectScopeOption::Project),
+    }
+}
+
 /// `@` with no `config.toml` profile: the picker would offer only **none**.
 /// Enter on an empty `type a name…` row.
 pub(crate) const TYPE_A_NAME_FIRST: &str = "type a name first";
@@ -428,6 +447,7 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::SoftDelete
                 | BoardIntent::Undo
                 | BoardIntent::File
+                | BoardIntent::ProjectDelete
                 | BoardIntent::LaunchUnarchive
                 | BoardIntent::PrimaryVerb
                 | BoardIntent::DispatchAgain
@@ -597,6 +617,19 @@ pub fn apply_intent(
     {
         model.pending_delete = None;
         model.pending_delete_bulk = false;
+    }
+    // The project picker's delete verb arms the same way: any intent other than its own
+    // confirmation route takes the arm down, so a move, a tab switch, or Esc never leaves
+    // a primed delete behind.
+    if model.pending_project_delete.is_some()
+        && !matches!(
+            intent,
+            BoardIntent::ProjectDelete
+                | BoardIntent::ConfirmCommand
+                | BoardIntent::SelectCommand(_)
+        )
+    {
+        model.pending_project_delete = None;
     }
     if model.empty_add_step_editor()
         && !matches!(
@@ -3947,14 +3980,7 @@ fn apply_board_intent(
             }
             if let Some(picker) = model.project_picker.as_ref() {
                 let tab = picker.tab;
-                let chosen = match tab {
-                    PickerTab::Main => picker.options.get(picker.selected).cloned(),
-                    PickerTab::Archived => picker
-                        .archived
-                        .get(picker.archived_selected)
-                        .map(|path| ProjectScopeOption::Project(path.clone())),
-                };
-                let Some(ProjectScopeOption::Project(path)) = chosen else {
+                let Some(ProjectScopeOption::Project(path)) = picker_selected_project(model) else {
                     // Main + Home (or an empty tab) is inert.
                     return Ok(IntentOutcome::None);
                 };
@@ -3992,6 +4018,84 @@ fn apply_board_intent(
                 return Ok(IntentOutcome::None);
             }
             // Success has no message: disappearing rows are the feedback.
+        }
+        BoardIntent::ProjectDelete => {
+            // Picker open: the first press arms the selected project, a second press on
+            // the same one deletes every task it carries and drops it from the lists.
+            if model.project_picker.is_none() {
+                return Ok(IntentOutcome::None);
+            }
+            // The desk row is not a project, and there is nothing to delete without a pick.
+            let Some(ProjectScopeOption::Project(path)) = picker_selected_project(model) else {
+                model.pending_project_delete = None;
+                return Ok(IntentOutcome::None);
+            };
+            let scope_path = path.to_string_lossy().into_owned();
+            let short = crate::ui::render::short_project(&scope_path).to_string();
+            let Some(preview) = domain.project_deletion(&scope_path) else {
+                model.pending_project_delete = None;
+                model.set_message(format!("nothing to delete in {short}"));
+                return Ok(IntentOutcome::None);
+            };
+            let armed = model
+                .pending_project_delete
+                .as_ref()
+                .is_some_and(|armed| paths_equivalent(&armed.to_string_lossy(), &scope_path));
+            if !armed {
+                model.pending_project_delete = Some(path);
+                let message = if preview.tasks == 0 {
+                    format!("press ctrl+x again to delete {short}")
+                } else {
+                    format!(
+                        "press ctrl+x again to delete {short} and its {}",
+                        task_count(preview.tasks)
+                    )
+                };
+                model.set_message(message);
+                return Ok(IntentOutcome::None);
+            }
+            model.clear_marks();
+            model.pending_project_delete = None;
+            let previous_visible = model.visible_ids();
+            let previous = model.selection_id;
+            let deletion = match domain.delete_project(&scope_path) {
+                Ok(deletion) => deletion,
+                Err(error) => {
+                    if error == DomainError::UnknownProject(scope_path.clone()) {
+                        model.set_message(format!("nothing to delete in {short}"));
+                    } else {
+                        model.set_message(error.to_string());
+                    }
+                    return Ok(IntentOutcome::None);
+                }
+            };
+            model.sync_from_domain(domain);
+            // The project is gone from every list, so a focus that pointed at it cannot
+            // outlive it. The picker path has already dropped the wide preview and the
+            // archived focus when it opened.
+            model.forget_project(&scope_path);
+            model.refresh_project_picker();
+            model.reanchor_selection(previous, &previous_visible);
+            let mut message = if deletion.tasks == 0 {
+                format!("deleted {short} \u{b7} no tasks")
+            } else {
+                format!(
+                    "deleted {short} \u{b7} {} \u{b7} ctrl+u undo",
+                    task_count(deletion.tasks)
+                )
+            };
+            if model
+                .this_repo
+                .as_ref()
+                .is_some_and(|repo| paths_equivalent(&repo.to_string_lossy(), &scope_path))
+            {
+                message.push_str(" · still here as this window's project");
+            }
+            if deletion.tasks > 0 {
+                model.undo_hint = domain.last_undo().cloned();
+            }
+            model.set_message(message);
+            return Ok(IntentOutcome::Persist);
         }
         BoardIntent::Undo => {
             model.clear_marks();

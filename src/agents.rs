@@ -1174,7 +1174,7 @@ impl DispatchSettings {
     /// Read `[dispatch]` from `<state_dir>/config.toml`. A missing file, table, or key is the
     /// default; only the `[dispatch]` table is validated, so a broken profile never blocks it.
     pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
-        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let path = crate::store::config_path(state_dir.as_ref());
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),

@@ -1286,6 +1286,9 @@ pub struct BoardModel {
     pub(super) suspended_delete_notice_label: Option<String>,
     /// First ctrl+x arms this exact target set; a second press on the same set deletes it.
     pub(super) pending_delete: Option<BTreeSet<Uuid>>,
+    /// First `ctrl+x` in the project picker arms this project; a second press deletes it.
+    /// Any other intent disarms it, exactly like [`Self::pending_delete`].
+    pub(super) pending_project_delete: Option<PathBuf>,
     /// Cursor-pinned dispatch cleanup details while the confirmation modal owns input.
     pub(super) cleanup_prompt: Option<CleanupPrompt>,
     /// A confirmed cleanup whose host work runs off the event loop. Outlives its card: Esc
@@ -2434,6 +2437,7 @@ impl BoardModel {
             suspended_delete_notice_count: None,
             suspended_delete_notice_label: None,
             pending_delete: None,
+            pending_project_delete: None,
             cleanup_prompt: None,
             cleanup_run: SharedCleanupRun::default(),
             quit_after_cleanup: None,
@@ -3741,6 +3745,7 @@ impl BoardModel {
         right.suspended_delete_notice_count = None;
         right.suspended_delete_notice_label = None;
         right.pending_delete = None;
+        right.pending_project_delete = None;
         right.pending_delete_bulk = false;
         right.clear_marks();
         right.mouse_press = None;
@@ -3929,6 +3934,33 @@ impl BoardModel {
         self.search_pinned = false;
         self.board_location = BoardLocation::Project(path);
         self.reanchor_selection(previous, &previous_visible);
+    }
+
+    /// Drop the session's references to a project that no longer exists: a board showing
+    /// it falls back to the desk, and the stored selection and session default scope are
+    /// cleared. The picker has already dropped the wide preview and any archived focus on
+    /// its way open, so none can point here.
+    pub(super) fn forget_project(&mut self, path: &str) {
+        let showing = matches!(
+            &self.board_location,
+            BoardLocation::Project(shown) | BoardLocation::ArchivedProject(shown)
+                if paths_equivalent(&shown.to_string_lossy(), path)
+        );
+        if showing {
+            self.switch_location(BoardLocation::Desk);
+        }
+        if self
+            .selected_project
+            .as_ref()
+            .is_some_and(|selected| paths_equivalent(&selected.to_string_lossy(), path))
+        {
+            self.selected_project = None;
+        }
+        if self.session_default_scope.as_ref().is_some_and(|scope| {
+            matches!(scope, TaskScope::Project { path: scope_path } if paths_equivalent(scope_path, path))
+        }) {
+            self.session_default_scope = Some(TaskScope::Global);
+        }
     }
 
     /// Open the read-only focus on `path` (AC-41). Session-only: nothing persists.

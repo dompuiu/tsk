@@ -26,6 +26,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
 - Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
+- `ctrl+x` twice in the project picker deletes every task in the project and drops it from the lists; `tsk project delete <name> --yes` does the same headless.
 - `tsk migrate` moves a store still in `~/.tsk` to the XDG data and settings directories.
 - `[workflow] pull_requests = false` lands work locally: agents commit without pushing, and `m` merges the branch into the base instead of a pull request.
 - A `[project."<path>"] pull_requests` override lands one repository locally while others keep pull requests.

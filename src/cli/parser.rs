@@ -203,13 +203,16 @@ pub enum TrashAction {
 }
 
 /// Parse `tsk trash` arguments, including argv0 and the `trash` subcommand.
-/// One project archive action.
+/// One project action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectAction {
     Archive {
         name: String,
     },
     Unarchive {
+        name: String,
+    },
+    Delete {
         name: String,
     },
     /// Set (`Some`) or clear (`None`) a project's title.
@@ -219,11 +222,13 @@ pub enum ProjectAction {
     },
 }
 
-/// Parsed `tsk project archive|unarchive <name>` input.
+/// Parsed `tsk project archive|unarchive|delete <name>` input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlagProject {
     pub action: Option<ProjectAction>,
     pub state_dir: Option<PathBuf>,
+    /// `--yes`, the project delete's confirmation.
+    pub yes: bool,
     pub help: bool,
 }
 
@@ -237,6 +242,7 @@ pub fn parse_flag_project(args: &[String]) -> Result<FlagProject, String> {
     let mut parsed = FlagProject {
         action: None,
         state_dir: None,
+        yes: false,
         help: false,
     };
     let mut clear = false;
@@ -250,6 +256,10 @@ pub fn parse_flag_project(args: &[String]) -> Result<FlagProject, String> {
         match flag {
             "--help" => {
                 parsed.help = true;
+                index += 1;
+            }
+            "--yes" => {
+                parsed.yes = true;
                 index += 1;
             }
             flag if flag.starts_with("--state-dir=") => {
@@ -313,14 +323,28 @@ pub fn parse_flag_project(args: &[String]) -> Result<FlagProject, String> {
                 name: (*name).to_string(),
             });
         }
+        ["delete", name] => {
+            parsed.action = Some(ProjectAction::Delete {
+                name: (*name).to_string(),
+            });
+        }
         [action, _] => return Err(format!("unknown project action {action}")),
         [action] => {
             return Err(match *action {
-                "archive" | "unarchive" => "project name is required".into(),
+                "archive" | "unarchive" | "delete" => "project name is required".into(),
                 other => format!("unknown project action {other}"),
             })
         }
         _ => unreachable!("positionals are capped at three"),
+    }
+    // `--yes` is the delete's confirmation and nothing else's flag.
+    match (&parsed.action, parsed.yes) {
+        (Some(ProjectAction::Delete { .. }), true) => {}
+        (Some(ProjectAction::Delete { .. }), false) => {
+            return Err("deleting a project needs --yes".into());
+        }
+        (_, true) => return Err("--yes is only for project delete".into()),
+        (_, false) => {}
     }
     Ok(parsed)
 }

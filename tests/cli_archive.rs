@@ -326,6 +326,124 @@ fn project_verbs_keep_addressing_removed_and_legacy_relative_project_paths() {
 }
 
 #[test]
+fn project_delete_needs_yes_and_soft_deletes_every_task_status() {
+    let dir = temp_state_dir("project-delete");
+    let _guard = TempDirGuard(dir.clone());
+    let project_path = dir.join("stale");
+    std::fs::create_dir(&project_path).expect("create project directory");
+    let project_text = project_path.to_string_lossy().into_owned();
+    for title in ["stale open", "stale done"] {
+        let added = cli(vec![
+            "tsk".into(),
+            "add".into(),
+            "-t".into(),
+            title.into(),
+            "-p".into(),
+            project_text.clone(),
+            "--state-dir".into(),
+            dir.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(added.code, 0, "{:?}", added.stderr);
+    }
+    let done = cli(vec![
+        "tsk".into(),
+        "status".into(),
+        "T2".into(),
+        "done".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(done.code, 0, "{:?}", done.stderr);
+    let project = |verb: &str, name: &str, yes: bool| {
+        let mut args = vec!["tsk".into(), "project".into(), verb.into(), name.into()];
+        if yes {
+            args.push("--yes".into());
+        }
+        args.push("--state-dir".into());
+        args.push(dir.to_string_lossy().into_owned());
+        cli(args)
+    };
+
+    // Without the flag nothing is written.
+    let missing = project("delete", "stale", false);
+    assert_eq!(missing.code, 2, "{missing:?}");
+    assert!(
+        missing.stderr.contains("deleting a project needs --yes"),
+        "{:?}",
+        missing.stderr
+    );
+    assert!(
+        TaskStore::new(&dir)
+            .load()
+            .expect("load")
+            .tasks()
+            .iter()
+            .all(|task| !task.soft_deleted),
+        "a refused delete writes nothing"
+    );
+
+    // Archived project and one done task: the delete takes both and drops the record.
+    let archived = project("archive", "stale", false);
+    assert_eq!(archived.code, 0, "{:?}", archived.stderr);
+    let deleted = project("delete", "stale", true);
+    assert_eq!(deleted.code, 0, "{:?}", deleted.stderr);
+    assert_eq!(deleted.stdout, "deleted project stale \u{b7} 2 tasks\n");
+    let store = TaskStore::new(&dir).load().expect("load deleted store");
+    assert!(
+        store.tasks().iter().all(|task| task.soft_deleted),
+        "every task in the project was deleted, whatever its status"
+    );
+    assert!(
+        store.projects().is_empty(),
+        "the archived project record goes too"
+    );
+
+    // A repeat has nothing left to delete.
+    let again = project("delete", "stale", true);
+    assert_eq!(again.code, 1, "{again:?}");
+    assert!(
+        again.stderr.contains("no project named stale has tasks"),
+        "{:?}",
+        again.stderr
+    );
+}
+
+#[test]
+fn project_delete_yes_is_refused_for_the_other_project_verbs() {
+    let dir = temp_state_dir("project-delete-yes");
+    let _guard = TempDirGuard(dir.clone());
+    let project_path = dir.join("atlas");
+    std::fs::create_dir(&project_path).expect("create project directory");
+    let added = cli(vec![
+        "tsk".into(),
+        "add".into(),
+        "-t".into(),
+        "atlas task".into(),
+        "-p".into(),
+        project_path.to_string_lossy().into_owned(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(added.code, 0, "{:?}", added.stderr);
+
+    let out = cli(vec![
+        "tsk".into(),
+        "project".into(),
+        "archive".into(),
+        "atlas".into(),
+        "--yes".into(),
+        "--state-dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(out.code, 2, "{out:?}");
+    assert!(
+        out.stderr.contains("--yes is only for project delete"),
+        "{:?}",
+        out.stderr
+    );
+}
+
+#[test]
 fn unarchive_refusals_name_the_unarchive_verb() {
     let dir = temp_state_dir("verb-refusal");
     let _guard = TempDirGuard(dir.clone());

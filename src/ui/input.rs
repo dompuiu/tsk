@@ -457,6 +457,9 @@ pub enum BoardIntent {
     /// unarchive the selected project). Archiving or restoring tasks records one undo entry;
     /// a project archive from the picker has none.
     File,
+    /// Picker `ctrl+x`: the delete verb, aimed at the selected project. The first press
+    /// arms the project, a second press deletes its tasks. Reducer lands in.
+    ProjectDelete,
     /// Picker `Tab` / `←` / `→`: flip the project selector between its main and
     /// archived tabs. Reducer lands in.
     ProjectPickerSwitchTab,
@@ -2511,6 +2514,7 @@ fn map_project_picker(key: KeyEvent) -> Option<BoardIntent> {
     {
         return match key.code {
             KeyCode::Char('f') => Some(BoardIntent::File),
+            KeyCode::Char('x') => Some(BoardIntent::ProjectDelete),
             KeyCode::Char('u') => Some(BoardIntent::Undo),
             KeyCode::Char('e') => Some(BoardIntent::BeginEditProjectTitle),
             _ => None,

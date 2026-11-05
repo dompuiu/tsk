@@ -602,21 +602,25 @@ tsk unarchive T12
 
 ## project
 
-Archives, unarchives, or titles a whole project, by title, basename, or path. Its tasks keep their statuses, and tasks archived on their own stay archived.
+Archives, unarchives, or titles a whole project, by title, basename, or path, or deletes it. Archive, unarchive, and title keep task statuses, and tasks archived on their own stay archived. A delete removes every task the project carries, whatever its status, and drops the project from the board.
 
 ```text
 tsk project archive <name> [--state-dir <dir>]
 tsk project unarchive <name> [--state-dir <dir>]
 tsk project title <name> <title> [--state-dir <dir>]
 tsk project title <name> --clear [--state-dir <dir>]
+tsk project delete <name> --yes [--state-dir <dir>]
 ```
 
 Output is `archived project <name>` or `unarchived project <name>`. Repeating it is safe. A name with no tasks refuses: `no project named <name> has tasks`. A name that two or more projects share refuses with `project <name> is ambiguous: <paths>`: pass one of the paths.
 
-**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
+A delete needs `--yes` and prints `deleted project <name> · 14 tasks`, then refuses on a repeat: `no project named <name> has tasks`. The CLI has no undo. The deleted tasks wait in `tsk list --deleted`, and each one comes back with [`tsk trash restore`](#trash) once it moves to [trash](/docs/storage/#deleted-tasks).
+
+**Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)). A delete without `--yes` is a usage error, exit 2.
 
 ```sh
 tsk project archive atlas
+tsk project delete atlas --yes
 ```
 
 ### Title

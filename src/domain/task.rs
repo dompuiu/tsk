@@ -713,6 +713,14 @@ pub fn normalize_project_title(title: &str) -> Option<String> {
     (!title.is_empty()).then_some(title)
 }
 
+/// What deleting a whole project did: the tasks it soft-deleted, and whether it also
+/// removed the project's archived record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectDeletion {
+    pub tasks: usize,
+    pub archived: bool,
+}
+
 /// A soft-deleted task older than this moves to `trash.jsonl` at the next save
 /// even while its undo entry is still the top of the stack.
 const TRASH_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -921,6 +929,37 @@ impl DomainState {
             .or_default()
             .archived = Some(true);
         Ok(true)
+    }
+
+    /// Tasks a project delete would soft-delete, and whether its archived record goes too.
+    /// `None` when the name carries neither, which is what the verb refuses.
+    pub fn project_deletion(&self, path: &str) -> Option<ProjectDeletion> {
+        let tasks = self.live_project_task_ids(path).len();
+        let archived = self.is_project_archived(path);
+        (tasks > 0 || archived).then_some(ProjectDeletion { tasks, archived })
+    }
+
+    /// Delete a whole project: soft-delete every task it carries, then drop its archived
+    /// record. Tasks of every status go, done and archived included; tasks already deleted
+    /// are left alone. The deletes are one batch undo entry (with the `after` links they
+    /// drop). The record removal is not undoable, like [`Self::archive_project`].
+    pub fn delete_project(&mut self, path: &str) -> Result<ProjectDeletion, DomainError> {
+        let ids = self.live_project_task_ids(path);
+        let archived = self.is_project_archived(path);
+        if ids.is_empty() && !archived {
+            return Err(DomainError::UnknownProject(path.to_string()));
+        }
+        if !ids.is_empty() {
+            self.soft_delete_batch(&ids)?;
+        }
+        if archived {
+            // The record can only be dropped; the tasks are gone or were never there.
+            let _ = self.unarchive_project(path);
+        }
+        Ok(ProjectDeletion {
+            tasks: ids.len(),
+            archived,
+        })
     }
 
     /// Unarchive a project: clear the archived flag, dropping a record that carries no
@@ -1155,6 +1194,19 @@ impl DomainState {
         self.tasks.iter().any(|task| {
             matches!(&task.scope, TaskScope::Project { path: task_path } if paths_equivalent(task_path, path))
         })
+    }
+
+    /// Ids of every task, in any status, that a project delete would take: the tasks the
+    /// project carries that are not already deleted.
+    fn live_project_task_ids(&self, path: &str) -> Vec<Uuid> {
+        self.tasks
+            .iter()
+            .filter(|task| {
+                !task.soft_deleted
+                    && matches!(&task.scope, TaskScope::Project { path: task_path } if paths_equivalent(task_path, path))
+            })
+            .map(|task| task.id)
+            .collect()
     }
 
     /// Lookup by id. Soft-deleted tasks remain findable.
@@ -3638,6 +3690,149 @@ mod tests {
         assert!(state.is_hidden(task_t), "T is hidden by its own flag");
         assert!(!state.is_hidden(task_other));
         assert!(state.projects().is_empty());
+    }
+
+    #[test]
+    fn delete_project_soft_deletes_every_status_and_drops_the_archived_record() {
+        let mut state = DomainState::new();
+        let scope = TaskScope::Project {
+            path: "/repos/p".into(),
+        };
+        let open = state
+            .create("Open", None, scope.clone(), ProvenanceOrigin::Manual, None)
+            .expect("create");
+        let done = state
+            .create("Done", None, scope.clone(), ProvenanceOrigin::Manual, None)
+            .expect("create");
+        let archived = state
+            .create("Archived", None, scope, ProvenanceOrigin::Manual, None)
+            .expect("create");
+        let elsewhere = state
+            .create(
+                "Elsewhere",
+                None,
+                TaskScope::Project {
+                    path: "/repos/other".into(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+        state.set_status(done, HumanStatus::Done).expect("done");
+        state.archive_task(archived).expect("archive task");
+        state.archive_project("/repos/p").expect("archive project");
+
+        assert_eq!(
+            state.project_deletion("/repos/p"),
+            Some(ProjectDeletion {
+                tasks: 3,
+                archived: true
+            })
+        );
+        let deletion = state.delete_project("/repos/p").expect("delete project");
+        assert_eq!(
+            deletion,
+            ProjectDeletion {
+                tasks: 3,
+                archived: true
+            }
+        );
+        for id in [open, done, archived] {
+            assert!(state.get(id).expect("task").soft_deleted, "deleted");
+        }
+        assert!(
+            !state.get(elsewhere).expect("task").soft_deleted,
+            "another project is untouched"
+        );
+        assert!(
+            state.projects().is_empty(),
+            "the archived record goes with the project"
+        );
+        assert!(!state.is_project_archived("/repos/p"));
+        assert_eq!(
+            state.project_deletion("/repos/p"),
+            None,
+            "nothing is left to delete"
+        );
+
+        state.undo().expect("undo restores the tasks");
+        for id in [open, done, archived] {
+            assert!(!state.get(id).expect("task").soft_deleted, "restored");
+        }
+        assert_eq!(
+            state.get(done).expect("task").status,
+            HumanStatus::Done,
+            "statuses come back as they were"
+        );
+        assert!(
+            state.get(archived).expect("task").archived,
+            "a task's own archived flag survives"
+        );
+        assert!(
+            state.projects().is_empty(),
+            "the record removal is not part of the undo"
+        );
+    }
+
+    #[test]
+    fn delete_project_skips_tasks_already_deleted() {
+        let mut state = DomainState::new();
+        let scope = TaskScope::Project {
+            path: "/repos/p".into(),
+        };
+        let live = state
+            .create("Live", None, scope.clone(), ProvenanceOrigin::Manual, None)
+            .expect("create");
+        let gone = state
+            .create("Gone", None, scope, ProvenanceOrigin::Manual, None)
+            .expect("create");
+        state.soft_delete(gone).expect("soft delete");
+
+        let deletion = state.delete_project("/repos/p").expect("delete project");
+        assert_eq!(deletion.tasks, 1, "only the live task counts");
+        assert!(state.get(live).expect("task").soft_deleted);
+        assert!(state.get(gone).expect("task").soft_deleted);
+    }
+
+    #[test]
+    fn delete_project_removes_an_archived_record_that_outlived_its_tasks() {
+        let mut state = DomainState::new();
+        let scope = TaskScope::Project {
+            path: "/repos/p".into(),
+        };
+        let id = state
+            .create("T", None, scope, ProvenanceOrigin::Manual, None)
+            .expect("create");
+        state.archive_project("/repos/p").expect("archive project");
+        state.soft_delete(id).expect("soft delete the only task");
+
+        assert_eq!(
+            state.project_deletion("/repos/p"),
+            Some(ProjectDeletion {
+                tasks: 0,
+                archived: true
+            })
+        );
+        let deletion = state.delete_project("/repos/p").expect("delete project");
+        assert_eq!(
+            deletion,
+            ProjectDeletion {
+                tasks: 0,
+                archived: true
+            }
+        );
+        assert!(state.projects().is_empty());
+    }
+
+    #[test]
+    fn delete_project_refuses_a_name_with_no_tasks_and_no_record() {
+        let mut state = DomainState::new();
+        assert_eq!(state.project_deletion("/nowhere"), None);
+        assert_eq!(
+            state.delete_project("/nowhere"),
+            Err(DomainError::UnknownProject("/nowhere".into()))
+        );
+        assert_eq!(state.undo_len(), 0, "a refusal writes no undo entry");
     }
 
     #[test]

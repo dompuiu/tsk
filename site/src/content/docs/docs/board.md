@@ -323,6 +323,10 @@ Launching the board inside an archived project asks whether to restore it. Keepi
 
 `ctrl+x`, pressed twice, deletes the marked tasks, or the cursor task when nothing is marked. The status row then reads, for example, `Deleted T12 "Fix login timeout" · ctrl+u undo`.
 
+The same chord in the project picker deletes a whole project. The first press arms it and names what goes: `press ctrl+x again to delete atlas and its 14 tasks`. The second press deletes every task it carries, whatever its status, and drops the project from the lists.
+
+`ctrl+u` after closing the picker puts the tasks back; the project does not return to the archived tab. Deleting the project this window launched in leaves its row: every launch repo is offered whether or not it has tasks. Started tasks keep their worktrees and branches, as with any delete.
+
 `ctrl+u` undoes the last change, from the board or the task page. The status row names the tasks it put back, such as `done undone · T12 back to started`. Undo covers:
 
 - delete, done, archive, and restore,
