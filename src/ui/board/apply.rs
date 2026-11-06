@@ -3464,19 +3464,28 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
-        BoardIntent::PageJumpUp | BoardIntent::PageJumpDown => {
+        BoardIntent::PageJumpUp
+        | BoardIntent::PageJumpDown
+        | BoardIntent::PageScrollToTop
+        | BoardIntent::PageScrollToBottom => {
             if model.focused_surface() != FocusedSurface::Task {
                 return Ok(IntentOutcome::None);
             }
             let Some(form) = model.form.as_mut().filter(|form| form.is_task()) else {
                 return Ok(IntentOutcome::None);
             };
-            let page = form.steps.window_rows.get().max(1);
             let horizon = form.notes_max_scroll.get();
-            let target = if intent == BoardIntent::PageJumpDown {
-                form.notes_scroll.saturating_add(page).min(horizon)
-            } else {
-                form.notes_scroll.saturating_sub(page)
+            let target = match intent {
+                BoardIntent::PageJumpUp => form
+                    .notes_scroll
+                    .saturating_sub(form.steps.window_rows.get().max(1)),
+                BoardIntent::PageJumpDown => form
+                    .notes_scroll
+                    .saturating_add(form.steps.window_rows.get().max(1))
+                    .min(horizon),
+                BoardIntent::PageScrollToTop => 0,
+                BoardIntent::PageScrollToBottom => horizon,
+                _ => unreachable!("page scroll intents matched above"),
             };
             if target != form.notes_scroll {
                 // A page key takes over from automatic caret or block following until the next

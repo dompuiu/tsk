@@ -451,6 +451,10 @@ pub enum BoardIntent {
     PageJumpUp,
     /// `PageDown` on the task page: scroll the shared body one painted viewport down.
     PageJumpDown,
+    /// `Home` on the task page: jump the shared body back to its first row.
+    PageScrollToTop,
+    /// `End` on the task page: jump the shared body to its last painted viewport.
+    PageScrollToBottom,
     /// Mouse-wheel scrolling is content-only: it never enters step-cursor navigation
     /// when the shared page body has reached an edge.
     PageWheelScrollUp,
@@ -1214,6 +1218,12 @@ fn help_bindings() -> Vec<HelpBinding> {
             HelpGroup::Navigation,
             "page up / page down",
             "scroll a full screen (task page)",
+            "move view notes steps",
+        ),
+        help_binding(
+            HelpGroup::Navigation,
+            "home / end",
+            "jump to the top / bottom (task page)",
             "move view notes steps",
         ),
         help_binding(
@@ -2376,6 +2386,8 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Down | KeyCode::Char('j') if !extra => Some(BoardIntent::PageScrollDown),
         KeyCode::PageUp if !extra => Some(BoardIntent::PageJumpUp),
         KeyCode::PageDown if !extra => Some(BoardIntent::PageJumpDown),
+        KeyCode::Home if !extra => Some(BoardIntent::PageScrollToTop),
+        KeyCode::End if !extra => Some(BoardIntent::PageScrollToBottom),
         _ => None,
     }
 }
