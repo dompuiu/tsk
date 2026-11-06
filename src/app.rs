@@ -1498,6 +1498,8 @@ pub fn apply_board_intent_with_save_recovery(
             | BoardIntent::PageScrollDown
             | BoardIntent::PageJumpUp
             | BoardIntent::PageJumpDown
+            | BoardIntent::PageScrollToTop
+            | BoardIntent::PageScrollToBottom
             | BoardIntent::PageWheelScrollUp
             | BoardIntent::PageWheelScrollDown
             | BoardIntent::ToggleDoneDrawer

@@ -4476,6 +4476,65 @@ fn page_keys_scroll_a_long_task_page_by_a_viewport() {
     );
 }
 
+/// `Home` / `End` jump a long task page to its top and bottom in one press.
+///
+/// Reading a long task should not need a run of screen or row scrolls to reach either end.
+#[test]
+fn home_and_end_jump_a_long_task_page_to_both_ends() {
+    let long = (0..12)
+        .map(|index| format!("{index}{}", "w".repeat(200)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut domain, mut model, id) = board_with_steps("long page", Some(&long), &[]);
+    let rev_before = domain.get(id).expect("task").revision;
+
+    for _ in 0..100 {
+        apply_intent(&mut domain, &mut model, BoardIntent::PageJumpDown, None).expect("page down");
+    }
+    let bottom = model.page_scroll();
+    assert!(bottom > 1, "the page must overflow its viewport: {bottom}");
+
+    let top = map_key(BoardInputMode::TaskPage, press(KeyCode::Home)).expect("Home maps");
+    assert_eq!(top, BoardIntent::PageScrollToTop);
+    apply_intent(&mut domain, &mut model, top.clone(), None).expect("jump to the top");
+    assert_eq!(model.page_scroll(), 0, "Home reaches the first row");
+
+    let end = map_key(BoardInputMode::TaskPage, press(KeyCode::End)).expect("End maps");
+    assert_eq!(end, BoardIntent::PageScrollToBottom);
+    apply_intent(&mut domain, &mut model, end.clone(), None).expect("jump to the bottom");
+    assert_eq!(
+        model.page_scroll(),
+        bottom,
+        "End lands on the last painted viewport"
+    );
+
+    // A jump at an end moves nothing and stays bounded.
+    apply_intent(&mut domain, &mut model, end, None).expect("jump down at the bottom");
+    assert_eq!(model.page_scroll(), bottom);
+    apply_intent(&mut domain, &mut model, top, None).expect("jump up at the top");
+    assert_eq!(model.page_scroll(), 0);
+    assert_eq!(domain.get(id).expect("task").revision, rev_before);
+
+    // Editing text keeps Home and End as line start and end.
+    for mode in [
+        BoardInputMode::EditTitle,
+        BoardInputMode::EditNotes,
+        BoardInputMode::EditStep,
+        BoardInputMode::EditThread,
+    ] {
+        assert_eq!(
+            map_key(mode, press(KeyCode::Home)),
+            Some(BoardIntent::EditMoveLineStart),
+            "{mode:?}"
+        );
+        assert_eq!(
+            map_key(mode, press(KeyCode::End)),
+            Some(BoardIntent::EditMoveLineEnd),
+            "{mode:?}"
+        );
+    }
+}
+
 /// The bottom of a WRAPPING note must be reachable by scrolling.
 ///
 /// The sibling test above uses `"line one\nline two"`, two short lines that never wrap at any

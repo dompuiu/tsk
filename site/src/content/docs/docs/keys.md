@@ -119,6 +119,7 @@ In view mode, before you start an edit:
 | Close the page | `Esc` |
 | Move among steps (`↓` selects the first); otherwise scroll | `↑` / `↓` or `k` / `j` |
 | Scroll a full screen | `PageUp` / `PageDown` |
+| Jump to the top / bottom | `Home` / `End` |
 | Walk the top line, options or checks, replies, steps, **+ step**, and the paper trail | `Tab` / `shift+Tab` |
 | Check / uncheck the selected step | `Enter` |
 | Add a step below the selected one, else at the end | `ctrl+a` |
