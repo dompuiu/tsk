@@ -787,7 +787,7 @@ tsk update
 
 ## migrate
 
-Moves a store still in `~/.tsk` to the [data and settings directories](/docs/storage/#location), once. Until it runs, a store in `~/.tsk` keeps working.
+Moves a store still in `~/.tsk`, or on Windows in `%LOCALAPPDATA%\tsk`, to the [data and settings directories](/docs/storage/#location), once. Until it runs, the old store keeps working and settings in `%APPDATA%\tsk` are still read.
 
 ```text
 tsk migrate
@@ -801,7 +801,7 @@ Moved /Users/me/.tsk to:
 
 A second run prints `Nothing to migrate`.
 
-**Refusals:** exit 1, nothing moved, when the new location already holds files, a board is open, or `TSK_STATE_DIR` or `TSK_CONFIG_DIR` is set. Extra arguments are a usage error, exit 2.
+**Refusals:** exit 1, nothing moved, when the new location already holds files, a board is open, `TSK_STATE_DIR` or `TSK_CONFIG_DIR` is set, or the old and new `config.toml` differ. Extra arguments are a usage error, exit 2.
 
 ## guide
 

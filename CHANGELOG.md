@@ -29,7 +29,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `PageUp` / `PageDown` scroll a long task page by a full screen.
 - `Home` / `End` jump a long task page to its top or bottom.
 - `ctrl+x` twice in the project picker deletes every task in the project and drops it from the lists; `tsk project delete <name> --yes` does the same headless.
-- `tsk migrate` moves a store still in `~/.tsk` to the XDG data and settings directories.
+- `tsk migrate` moves a store still in `~/.tsk`, or on Windows in `%LOCALAPPDATA%\tsk` with settings in `%APPDATA%\tsk`, to the XDG data and settings directories.
 - `[workflow] pull_requests = false` lands work locally: agents commit without pushing, and `m` merges the branch into the base instead of a pull request.
 - A `[project."<path>"] pull_requests` override lands one repository locally while others keep pull requests.
 - `[merge] method` also shapes a local land: a merge commit, one squash commit, or the branch's commits replayed onto the base.

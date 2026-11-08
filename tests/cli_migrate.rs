@@ -40,7 +40,14 @@ impl Layout {
     }
 
     fn legacy(&self) -> PathBuf {
-        self.home.join(".tsk")
+        #[cfg(unix)]
+        {
+            self.home.join(".tsk")
+        }
+        #[cfg(windows)]
+        {
+            self.home.join("AppData").join("Local").join("tsk")
+        }
     }
 
     fn data_store(&self) -> PathBuf {
@@ -60,6 +67,14 @@ impl Layout {
             .env_remove("TSK_STATE_DIR")
             .env_remove("TSK_CONFIG_DIR")
             .env("TSK_NO_UPDATE_CHECK", "1");
+        #[cfg(windows)]
+        {
+            // The pre-XDG Windows layout: data in %LOCALAPPDATA%, settings in %APPDATA%.
+            command
+                .env("USERPROFILE", &self.home)
+                .env("LOCALAPPDATA", self.home.join("AppData/Local"))
+                .env("APPDATA", self.home.join("AppData/Roaming"));
+        }
         command
     }
 
@@ -183,6 +198,128 @@ fn a_store_in_dot_tsk_keeps_working_until_migrated_then_moves() {
         "{}",
         stdout(&again)
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_windows_store_in_localappdata_moves_to_xdg_when_the_variables_are_set() {
+    let root = temp("windows-move");
+    let layout = Layout::new(&root);
+    let old_config = layout
+        .home
+        .join("AppData")
+        .join("Roaming")
+        .join("tsk")
+        .join("config.toml");
+
+    // With the XDG variables set, an existing store still opens from the old layout.
+    let seeded = layout
+        .command()
+        .env("TSK_STATE_DIR", layout.legacy())
+        .args(["add", "-t", "before upgrade"])
+        .output()
+        .expect("spawn add");
+    assert_eq!(seeded.status.code(), Some(0), "{}", stderr(&seeded));
+    // Without the override the legacy store must win over the empty XDG data directory.
+    let after = layout
+        .command()
+        .args(["add", "-t", "after upgrade"])
+        .output()
+        .expect("spawn add");
+    assert_eq!(after.status.code(), Some(0), "{}", stderr(&after));
+    assert!(fs::read_to_string(layout.legacy().join("tsk.json"))
+        .expect("legacy store")
+        .contains("after upgrade"));
+    assert!(
+        !layout.data_store().exists(),
+        "the store did not move on its own"
+    );
+
+    fs::create_dir_all(old_config.parent().expect("settings dir")).expect("settings dir");
+    fs::write(&old_config, "[board]\n").expect("old config");
+
+    let moved = layout.migrate();
+    assert_eq!(moved.status.code(), Some(0), "{}", stderr(&moved));
+    assert!(!layout.legacy().exists(), "the old store directory is gone");
+    assert!(!old_config.exists(), "the old settings file is gone");
+    assert!(fs::read_to_string(layout.data_store().join("tsk.json"))
+        .expect("migrated store")
+        .contains("before upgrade"));
+    assert_eq!(
+        fs::read_to_string(layout.config_file()).expect("settings"),
+        "[board]\n"
+    );
+
+    let listed = layout
+        .command()
+        .args(["list", "--json"])
+        .output()
+        .expect("spawn list");
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
+    assert!(stdout(&listed).contains("before upgrade"));
+
+    let again = layout.migrate();
+    assert_eq!(again.status.code(), Some(0), "{}", stderr(&again));
+    assert!(
+        stdout(&again).contains("Nothing to migrate"),
+        "{}",
+        stdout(&again)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(windows)]
+#[test]
+fn data_only_xdg_moves_the_store_and_keeps_the_settings_in_appdata() {
+    let root = temp("windows-data-only");
+    let layout = Layout::new(&root);
+    let old_config = layout
+        .home
+        .join("AppData")
+        .join("Roaming")
+        .join("tsk")
+        .join("config.toml");
+
+    let seeded = layout
+        .command()
+        .env("TSK_STATE_DIR", layout.legacy())
+        .args(["add", "-t", "data only"])
+        .output()
+        .expect("spawn add");
+    assert_eq!(seeded.status.code(), Some(0), "{}", stderr(&seeded));
+    fs::create_dir_all(old_config.parent().expect("settings dir")).expect("settings dir");
+    fs::write(&old_config, "[board]\n").expect("old config");
+
+    // Without XDG_CONFIG_HOME the settings directory is the one they are already in.
+    let moved = layout
+        .command()
+        .env_remove("XDG_CONFIG_HOME")
+        .arg("migrate")
+        .output()
+        .expect("spawn migrate");
+    assert_eq!(moved.status.code(), Some(0), "{}", stderr(&moved));
+    assert!(!layout.legacy().exists(), "the old store directory is gone");
+    assert!(layout.data_store().join("tsk.json").exists());
+    assert_eq!(
+        fs::read_to_string(&old_config).expect("settings"),
+        "[board]\n"
+    );
+    assert!(
+        !layout.config_file().exists(),
+        "nothing moved to XDG settings"
+    );
+
+    let listed = layout
+        .command()
+        .env_remove("XDG_CONFIG_HOME")
+        .args(["list", "--json"])
+        .output()
+        .expect("spawn list");
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
+    assert!(stdout(&listed).contains("data only"));
 
     let _ = fs::remove_dir_all(root);
 }

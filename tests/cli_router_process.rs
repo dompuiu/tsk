@@ -18,6 +18,16 @@ fn binary() -> String {
     std::env::var("CARGO_BIN_EXE_tsk").expect("Cargo must provide the tsk binary path")
 }
 
+/// A tsk process cut off from the caller's XDG variables: these tests cover the default
+/// and pre-XDG layouts, which a developer's own environment would otherwise override.
+fn tsk_command() -> Command {
+    let mut command = Command::new(binary());
+    command
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME");
+    command
+}
+
 fn temp_state_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -53,7 +63,7 @@ fn wait_with_output_before_deadline(mut child: Child, description: &str) -> Outp
 #[test]
 fn top_level_help_names_subcommands_and_their_help() {
     let output = wait_with_output_before_deadline(
-        Command::new(binary())
+        tsk_command()
             .arg("--help")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -81,7 +91,7 @@ fn top_level_help_names_subcommands_and_their_help() {
 #[test]
 fn update_help_explains_installer_and_homebrew_behavior_without_updating() {
     let output = wait_with_output_before_deadline(
-        Command::new(binary())
+        tsk_command()
             .args(["update", "--help"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -136,7 +146,7 @@ fn update_directs_a_homebrew_binary_to_brew_without_a_path_lookup() {
 #[test]
 fn top_level_help_lists_guide_and_ends_with_agent_footer() {
     let output = wait_with_output_before_deadline(
-        Command::new(binary())
+        tsk_command()
             .arg("--help")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -163,7 +173,7 @@ fn top_level_help_lists_guide_and_ends_with_agent_footer() {
 #[test]
 fn executable_accepts_piped_json_plan_and_persists_it() {
     let dir = temp_state_dir("piped-plan");
-    let mut child = Command::new(binary())
+    let mut child = tsk_command()
         .args(["add", "--state-dir", dir.to_str().expect("UTF-8 state dir")])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -210,7 +220,7 @@ fn executable_list_json_reads_state_without_opening_the_board() {
     TaskStore::new(&dir).save(&state).expect("seed state");
 
     let output = wait_with_output_before_deadline(
-        Command::new(binary())
+        tsk_command()
             .args([
                 "list",
                 "--desk",
@@ -238,7 +248,7 @@ fn executable_list_json_reads_state_without_opening_the_board() {
 
 #[test]
 fn unknown_positional_exits_2_without_opening_the_board() {
-    let mut child = Command::new(binary())
+    let mut child = tsk_command()
         .arg("foo")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -266,7 +276,7 @@ fn unknown_positional_exits_2_without_opening_the_board() {
 fn windows_uses_localappdata_without_home_or_userprofile() {
     let root = temp_state_dir("windows-localappdata");
     let local = root.join("local");
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["list", "--all"])
         .env_remove("HOME")
         .env_remove("USERPROFILE")
@@ -287,7 +297,7 @@ fn windows_uses_localappdata_without_home_or_userprofile() {
 fn windows_falls_back_to_userprofile_without_localappdata() {
     let root = temp_state_dir("windows-userprofile");
     let profile = root.join("profile");
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["list", "--all"])
         .env_remove("HOME")
         .env_remove("LOCALAPPDATA")
@@ -296,14 +306,22 @@ fn windows_falls_back_to_userprofile_without_localappdata() {
         .output()
         .expect("run tsk with USERPROFILE only");
     assert!(output.status.success(), "{output:?}");
-    assert!(profile.join(".tsk").join("tsk.json.lock").exists());
+    assert!(
+        profile
+            .join("AppData")
+            .join("Local")
+            .join("tsk")
+            .join("tsk.json.lock")
+            .exists(),
+        "without %LOCALAPPDATA% the store falls back to %USERPROFILE%\\AppData\\Local\\tsk"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory() {
     let cwd = temp_state_dir("nohome");
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["list"])
         .current_dir(&cwd)
         .env_remove("HOME")
@@ -322,7 +340,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
     );
 
     // An empty HOME is the same as none.
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["list"])
         .current_dir(&cwd)
         .env("HOME", "")
@@ -335,7 +353,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
 
     // `--state-dir` on the verb is enough too.
     let explicit = temp_state_dir("nohome-explicit");
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["list", "--all", "--state-dir"])
         .arg(&explicit)
         .current_dir(&cwd)
@@ -348,7 +366,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     // The equals spelling counts too.
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["list", "--all"])
         .arg(format!("--state-dir={}", explicit.display()))
         .current_dir(&cwd)
@@ -364,7 +382,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
     // The board and quick capture open the store too; each refuses before any terminal or
     // file is touched.
     for args in [vec![] as Vec<&str>, vec!["capture"]] {
-        let mut child = Command::new(binary())
+        let mut child = tsk_command()
             .args(&args)
             .current_dir(&cwd)
             .env_remove("HOME")
@@ -388,7 +406,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
     }
 
     // So is `tsk setup herdr --help`, which never opens the store.
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["setup", "herdr", "--help"])
         .current_dir(&cwd)
         .env_remove("HOME")
@@ -401,7 +419,7 @@ fn a_missing_home_refuses_instead_of_creating_a_board_in_the_working_directory()
 
     // The override alone is enough.
     let state = temp_state_dir("nohome-state");
-    let output = Command::new(binary())
+    let output = tsk_command()
         .args(["list", "--all"])
         .current_dir(&cwd)
         .env_remove("HOME")
@@ -428,7 +446,7 @@ fn a_dispatched_agent_signs_its_block_and_reply_with_tsk_agent() {
         .expect("seed task");
     TaskStore::new(&dir).save(&state).expect("seed state");
     let run = |args: &[&str], agent: Option<&str>| {
-        let mut command = Command::new(binary());
+        let mut command = tsk_command();
         command
             .args(args)
             .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
@@ -528,7 +546,7 @@ fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
         .expect("seed task");
     TaskStore::new(&dir).save(&state).expect("seed state");
     let run = |agent: Option<&str>| {
-        let mut command = Command::new(binary());
+        let mut command = tsk_command();
         command
             .args(["status", "T1", "started"])
             .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
@@ -618,7 +636,7 @@ fn blocked_dispatched_task(dir: &std::path::Path) {
 }
 
 fn reply_send(dir: &std::path::Path, text: &str, env: &[(&str, &str)], herdr: bool) -> Output {
-    let mut command = Command::new(binary());
+    let mut command = tsk_command();
     command
         .args(["reply", "T1", "--send", "--state-dir"])
         .arg(dir)

@@ -2832,12 +2832,13 @@ pub fn update_help() -> CliOutput {
 pub fn migrate_help() -> CliOutput {
     help(HelpDoc {
         usage: vec!["tsk migrate".into()],
-        purpose: "Move a store still in ~/.tsk to $XDG_DATA_HOME/tsk, and its config.toml to $XDG_CONFIG_HOME/tsk. Run it once after upgrading; a store in ~/.tsk keeps working until then.".into(),
+        purpose: "Move a store still in ~/.tsk, or on Windows in %LOCALAPPDATA%\\tsk, to $XDG_DATA_HOME/tsk, and its config.toml to $XDG_CONFIG_HOME/tsk. Run it once after upgrading; the old location keeps working until then.".into(),
         groups: Vec::new(),
         examples: vec!["tsk migrate".into()],
         refusals: vec![
             "the new location already holds files".into(),
             "a board is open, or TSK_STATE_DIR or TSK_CONFIG_DIR is set".into(),
+            "the old and new config.toml differ".into(),
         ],
         exit: exit_line(
             "store and config moved, or nothing to migrate",
