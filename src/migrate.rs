@@ -44,10 +44,22 @@ pub fn run() -> Result<Report, String> {
     let Some(config) = store::default_config_dir() else {
         return Err(missing());
     };
-    run_at(&legacy, &data, &config)
+    let legacy_config = store::legacy_config_dir();
+    run_at_with_config(&legacy, legacy_config.as_deref(), &data, &config)
 }
 
+/// [`run`] for a caller that does not need the old Windows settings directory, such as a
+/// test of the Unix layout.
 pub fn run_at(legacy: &Path, data: &Path, config: &Path) -> Result<Report, String> {
+    run_at_with_config(legacy, None, data, config)
+}
+
+pub fn run_at_with_config(
+    legacy: &Path,
+    legacy_config: Option<&Path>,
+    data: &Path,
+    config: &Path,
+) -> Result<Report, String> {
     let config_file = config.join(CONFIG_FILE);
     let mut report = Report {
         legacy: legacy.to_path_buf(),
@@ -56,38 +68,93 @@ pub fn run_at(legacy: &Path, data: &Path, config: &Path) -> Result<Report, Strin
         store_moved: false,
         moved: false,
     };
+    let legacy_present = legacy.is_dir();
+    // Windows keeps the store in the same place before and after the split only when the
+    // XDG variables are unset; otherwise the move below is a real one.
+    let in_place = store::same_dir(legacy, data);
+    let moves_store = legacy_present && !in_place;
+    let in_store = data.join(CONFIG_FILE);
+    // Settings sit beside the store before the move, or in the settings directory an older
+    // Windows install used. When that directory is also the destination there is nothing
+    // to move.
+    let config_target_is_legacy = legacy_config.is_some_and(|dir| store::same_dir(dir, config));
+    let legacy_file = legacy_config
+        .map(|dir| dir.join(CONFIG_FILE))
+        .filter(|path| !config_target_is_legacy && path.exists());
+    let store_file = if legacy_present {
+        legacy.join(CONFIG_FILE)
+    } else {
+        in_store.clone()
+    };
+    let has_config_source = store_file.exists() || legacy_file.is_some();
     // A failed earlier run may have moved the store and left its settings behind; that
     // remainder is still migrated, so a retry finishes the job.
-    let pending_config = data.join(CONFIG_FILE).exists() && !config_file.exists();
-    if !legacy.is_dir() && !pending_config {
+    let pending_config = has_config_source && !config_file.exists();
+    if !legacy_present && !pending_config {
         return Ok(report);
     }
-    if config_file.exists() {
+    if has_config_source && config_file.exists() {
         return Err(format!(
             "{} already exists; move it away and run tsk migrate again",
             config_file.display()
         ));
     }
-    // Windows keeps the store in the same place before and after the split; only the
-    // settings file moves out of it.
-    let in_place = legacy == data;
-    let legacy_present = legacy.is_dir();
-    if legacy_present && !in_place {
+    // A Windows install could leave settings in both places. Never pick one silently; an
+    // identical copy is dropped once the kept one has moved.
+    let mut duplicate_legacy: Option<PathBuf> = None;
+    if let Some(other) = legacy_file.as_ref() {
+        if store_file.exists() {
+            let read = |path: &Path| {
+                fs::read(path)
+                    .map_err(|error| format!("could not read {}: {error}", path.display()))
+            };
+            if read(&store_file)? != read(other)? {
+                return Err(format!(
+                    "{} and {} both hold settings; keep one and run tsk migrate again",
+                    store_file.display(),
+                    other.display()
+                ));
+            }
+            duplicate_legacy = Some(other.clone());
+        }
+    }
+    if moves_store && is_inside(data, legacy) {
+        return Err(format!(
+            "{} is inside {}; set XDG_DATA_HOME outside the old store",
+            data.display(),
+            legacy.display()
+        ));
+    }
+    if moves_store {
         empty_destination(data)?;
     }
-    let _locks = if legacy_present {
+    let locks = if legacy_present {
         Some(Locks::acquire(legacy)?)
     } else {
         None
     };
-    if legacy_present && !in_place {
+    if moves_store {
         if let Some(parent) = data.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
         }
+    }
+    // Windows refuses to rename a directory that holds an open handle, and the lock files
+    // are exactly that. Holding them proves no board or save is running; the rename below
+    // has to happen after they close on Windows. Unix keeps the guard through both moves.
+    #[cfg(windows)]
+    drop(locks);
+    #[cfg(not(windows))]
+    let _locks = locks;
+    if moves_store {
         move_dir(legacy, data).map_err(|error| {
+            let hint = if error.kind() == io::ErrorKind::PermissionDenied {
+                "; close any program using the store and run tsk migrate again"
+            } else {
+                ""
+            };
             format!(
-                "could not move {} to {}: {error}",
+                "could not move {} to {}: {error}{hint}",
                 legacy.display(),
                 data.display()
             )
@@ -95,8 +162,12 @@ pub fn run_at(legacy: &Path, data: &Path, config: &Path) -> Result<Report, Strin
         report.store_moved = true;
     }
     let mut moved_config = false;
-    let source = data.join(CONFIG_FILE);
-    if source.exists() {
+    let source = if in_store.exists() {
+        Some(in_store)
+    } else {
+        legacy_file
+    };
+    if let Some(source) = source {
         crate::fsperm::ensure_private_dir(config)
             .and_then(|()| move_file(&source, &config_file))
             .map_err(|error| {
@@ -108,9 +179,23 @@ pub fn run_at(legacy: &Path, data: &Path, config: &Path) -> Result<Report, Strin
             })?;
         crate::fsperm::tighten_file(&config_file);
         moved_config = true;
+        if let Some(other) = duplicate_legacy {
+            let _ = fs::remove_file(other);
+        }
     }
     report.moved = report.store_moved || moved_config;
     Ok(report)
+}
+
+/// Whether `path` lies under `ancestor`, by spelling or once canonicalized.
+fn is_inside(path: &Path, ancestor: &Path) -> bool {
+    if path.starts_with(ancestor) {
+        return true;
+    }
+    match (fs::canonicalize(path), fs::canonicalize(ancestor)) {
+        (Ok(path), Ok(ancestor)) => path.starts_with(ancestor),
+        _ => false,
+    }
 }
 
 /// A destination with anything in it is never merged into: two stores would diverge. An
@@ -222,13 +307,13 @@ fn cross_device(error: &io::Error) -> bool {
     }
 }
 
-/// Cross-device fallback: copy every file with its mode, refusing symlinks so nothing links
-/// out of the store, then let the caller delete the source.
+/// Cross-device fallback: copy every file with its mode, refusing links and junctions so
+/// nothing points out of the store, then let the caller delete the source.
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(from)?;
-    if metadata.file_type().is_symlink() {
+    if crate::fsperm::is_reparse_or_symlink(&metadata) {
         return Err(io::Error::other(format!(
-            "{} is a symlink; move it by hand",
+            "{} is a symlink or junction; move it by hand",
             from.display()
         )));
     }
@@ -317,6 +402,129 @@ mod tests {
         );
     }
 
+    #[test]
+    fn moves_a_store_that_still_holds_the_lock_files() {
+        // Windows refuses to rename a directory whose files are open, so the locks that
+        // prove no board is running must close before the move. Unix renames either way,
+        // so this test guards the Windows ordering.
+        let root = temp("locks-move");
+        let (legacy, data, config) = legacy_with_config(&root.0);
+        for name in [
+            "board.lock",
+            "tsk.json.lock",
+            "backup.lock",
+            "backup.pending.lock",
+        ] {
+            fs::write(legacy.join(name), "").expect("lock");
+        }
+
+        let report = run_at(&legacy, &data, &config).expect("migrate with lock files");
+
+        assert!(report.store_moved);
+        assert!(!legacy.exists());
+        assert!(data.join("board.lock").exists());
+        assert_eq!(
+            fs::read_to_string(config.join(CONFIG_FILE)).expect("config"),
+            "[merge]\nmethod = \"squash\"\n"
+        );
+    }
+
+    #[test]
+    fn moves_settings_left_in_the_old_windows_settings_directory() {
+        let root = temp("old-settings");
+        let legacy = root.0.join("local/tsk");
+        let old_config = root.0.join("roaming/tsk");
+        let data = root.0.join("home/.local/share/tsk");
+        let config = root.0.join("home/.config/tsk");
+        fs::create_dir_all(&legacy).expect("store");
+        fs::write(legacy.join("tsk.json"), "{}").expect("store file");
+        fs::create_dir_all(&old_config).expect("old settings");
+        fs::write(old_config.join(CONFIG_FILE), "[board]\n").expect("settings");
+
+        let report =
+            run_at_with_config(&legacy, Some(&old_config), &data, &config).expect("migrate");
+
+        assert!(report.store_moved);
+        assert!(!legacy.exists());
+        assert!(!old_config.join(CONFIG_FILE).exists());
+        assert_eq!(
+            fs::read_to_string(config.join(CONFIG_FILE)).expect("config"),
+            "[board]\n"
+        );
+    }
+
+    #[test]
+    fn refuses_two_settings_files_that_differ() {
+        let root = temp("settings-both");
+        let (legacy, data, config) = legacy_with_config(&root.0);
+        let old_config = root.0.join("roaming/tsk");
+        fs::create_dir_all(&old_config).expect("old settings");
+        fs::write(old_config.join(CONFIG_FILE), "[board]\n").expect("other settings");
+
+        let error = run_at_with_config(&legacy, Some(&old_config), &data, &config)
+            .expect_err("two settings files");
+        assert!(error.contains("both hold settings"), "{error}");
+        assert!(legacy.join("tsk.json").exists(), "nothing moved");
+        assert!(!data.exists());
+        assert!(!config.exists());
+    }
+
+    #[test]
+    fn an_identical_settings_copy_is_removed_after_the_move() {
+        let root = temp("settings-same");
+        let (legacy, data, config) = legacy_with_config(&root.0);
+        let old_config = root.0.join("roaming/tsk");
+        fs::create_dir_all(&old_config).expect("old settings");
+        fs::copy(legacy.join(CONFIG_FILE), old_config.join(CONFIG_FILE)).expect("copy settings");
+
+        run_at_with_config(&legacy, Some(&old_config), &data, &config).expect("migrate");
+
+        assert_eq!(
+            fs::read_to_string(config.join(CONFIG_FILE)).expect("config"),
+            "[merge]\nmethod = \"squash\"\n"
+        );
+        assert!(!data.join(CONFIG_FILE).exists());
+        assert!(
+            !old_config.join(CONFIG_FILE).exists(),
+            "the stale copy is dropped once the kept one moved"
+        );
+    }
+
+    #[test]
+    fn moving_only_the_store_is_enough_when_the_settings_already_sit_there() {
+        // Windows with `XDG_DATA_HOME` set and `XDG_CONFIG_HOME` unset: the settings
+        // directory is the same before and after, so only the store moves.
+        let root = temp("data-only");
+        let legacy = root.0.join("local/tsk");
+        let data = root.0.join("home/.local/share/tsk");
+        let config = root.0.join("roaming/tsk");
+        fs::create_dir_all(&legacy).expect("store");
+        fs::write(legacy.join("tsk.json"), "{}").expect("store file");
+        fs::create_dir_all(&config).expect("settings");
+        fs::write(config.join(CONFIG_FILE), "[board]\n").expect("settings");
+
+        let report = run_at_with_config(&legacy, Some(&config), &data, &config).expect("migrate");
+
+        assert!(report.store_moved);
+        assert!(!legacy.exists());
+        assert!(data.join("tsk.json").exists());
+        assert_eq!(
+            fs::read_to_string(config.join(CONFIG_FILE)).expect("settings"),
+            "[board]\n"
+        );
+    }
+
+    #[test]
+    fn refuses_a_data_directory_inside_the_old_store() {
+        let root = temp("inside");
+        let (legacy, _data, config) = legacy_with_config(&root.0);
+        let inside = legacy.join("share/tsk");
+
+        let error = run_at(&legacy, &inside, &config).expect_err("inside the store");
+        assert!(error.contains("is inside"), "{error}");
+        assert!(legacy.join("tsk.json").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_config_directory_is_private() {
@@ -388,6 +596,7 @@ mod tests {
         assert!(!data.exists());
 
         lock.unlock().expect("unlock");
+        drop(lock);
         run_at(&legacy, &data, &config).expect("migrate once the board quits");
     }
 

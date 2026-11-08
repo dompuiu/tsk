@@ -311,9 +311,10 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   (see Assignee and dispatch).
 - The settings file is resolved by `store::config_path`, never
   `state_dir.join("config.toml")`: `config.toml` lives in the XDG config directory
-  (`$XDG_CONFIG_HOME/tsk`, `%APPDATA%\tsk`), and an explicit `TSK_STATE_DIR`,
-  `--state-dir`, or a pre-XDG store keeps it beside the store. `tsk migrate` is the only
-  code that moves a store; a store still in `~/.tsk` keeps winning until it runs.
+  (`$XDG_CONFIG_HOME/tsk`; on Windows `%APPDATA%\tsk` when XDG is unset), and an explicit
+  `TSK_STATE_DIR`, `--state-dir`, or a pre-XDG store keeps it beside the store.
+  `tsk migrate` is the only code that moves a store; a store still in `~/.tsk`, or in
+  `%LOCALAPPDATA%\tsk` before the first Windows migrate, keeps winning until it runs.
 - The state dir must be a real directory on a local disk (flock plus rename replace);
   permission hardening refuses a symlink rather than chmodding its target. Host-injected
   `HERDR_PLUGIN_*` dirs are ignored on purpose.

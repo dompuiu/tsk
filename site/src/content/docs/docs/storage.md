@@ -10,11 +10,12 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 | Platform | Tasks and state | Settings |
 | --- | --- | --- |
 | macOS, Linux | `$XDG_DATA_HOME/tsk`, `~/.local/share/tsk` by default | `$XDG_CONFIG_HOME/tsk`, `~/.config/tsk` by default |
-| Windows | `%LOCALAPPDATA%\tsk` | `%APPDATA%\tsk` |
+| Windows | `$XDG_DATA_HOME/tsk` when set, else `%LOCALAPPDATA%\tsk` | `$XDG_CONFIG_HOME/tsk` when set, else `%APPDATA%\tsk` |
 
 - `TSK_STATE_DIR` moves the data directory and `TSK_CONFIG_DIR` moves the settings directory. While `TSK_STATE_DIR` or `--state-dir` is set, `config.toml` stays in the data directory, so a test or one-off run stays in one place.
 - `--state-dir <dir>` moves the data directory for one data command, with `config.toml` beside it.
-- A store still in `~/.tsk` opens as before, until [`tsk migrate`](#moving-an-old-store) moves it. A `config.toml` still beside a store wins over the settings directory until then.
+- `XDG_DATA_HOME` and `XDG_CONFIG_HOME` select the directories on every platform. On Windows they move tsk off `%LOCALAPPDATA%` and `%APPDATA%`, so a dotfile layout can be shared with a Unix install; [`tsk migrate`](#moving-an-old-store) moves an existing store and its settings.
+- A store still in `~/.tsk`, or in `%LOCALAPPDATA%\tsk` before the first Windows migrate, opens as before, until [`tsk migrate`](#moving-an-old-store) moves it. A `config.toml` still beside a store, or still in `%APPDATA%\tsk`, wins over the settings directory until then.
 - When both locations hold a store, tsk opens the new one and leaves `~/.tsk` untouched. Move or delete the old directory yourself.
 - With no home directory and no `TSK_STATE_DIR`, tsk refuses to run rather than pick a directory.
 - Inside Herdr or Rex, tsk uses the same directories, so their board and a bare terminal show the same tasks.
@@ -23,13 +24,13 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 
 ## Moving an old store
 
-Before the XDG layout, tsk kept everything in `~/.tsk`. That directory keeps working until you move it:
+Before the XDG layout, tsk kept everything in `~/.tsk`, and on Windows the store in `%LOCALAPPDATA%\tsk` and `config.toml` in `%APPDATA%\tsk`. That directory keeps working until you move it:
 
 1. Quit every open board.
 2. Run `tsk migrate`.
 3. Reopen the board.
 
-`tsk migrate` moves the store to the data directory and `config.toml` to the settings directory. It refuses when either destination already holds files, when a board is open, or when `TSK_STATE_DIR` or `TSK_CONFIG_DIR` is set. [Reference](/docs/cli/#migrate).
+`tsk migrate` moves the store to the data directory and `config.toml` to the settings directory. It refuses when either destination already holds files, when a board is open, when `TSK_STATE_DIR` or `TSK_CONFIG_DIR` is set, or when the old and new `config.toml` differ. [Reference](/docs/cli/#migrate).
 
 ## Files
 
