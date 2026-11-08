@@ -882,6 +882,7 @@ fn windows_launcher_delivers_argv_and_env_verbatim_through_powershell() {
             worktree: "C:\\w",
             branch: "tsk/t1",
             base: "main",
+            pull_requests: true,
         },
         None,
     );
@@ -924,6 +925,7 @@ fn run_windows_launcher(
             worktree: "C:\\w",
             branch: "tsk/t1",
             base: "main",
+            pull_requests: true,
         },
         None,
     );
