@@ -89,6 +89,8 @@ PI_PROVIDER = "anthropic"
 
 The prompt goes to the command as its last argument. `command`, `prompt`, and both `prompt_append` keys can use these placeholders; tsk replaces nothing else.
 
+Every prompt and command argument reaches the agent with LF line endings, even when `config.toml` or the task text was saved with CRLF.
+
 | Placeholder | Value |
 | --- | --- |
 | `{number}` | Task number, without the `T` |

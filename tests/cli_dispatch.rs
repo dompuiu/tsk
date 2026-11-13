@@ -839,6 +839,69 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
     fs::remove_dir_all(repos).expect("cleanup repos");
 }
 
+#[test]
+fn show_prompt_renders_a_crlf_config_and_task_text_with_lf_only() {
+    let dir = std::env::temp_dir().join(format!(
+        "tsk-cli-dispatch-crlf-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&dir).expect("mkdir");
+    // A Windows editor writes `config.toml` with CRLF, and a multi-line TOML string keeps
+    // it. Task text comes from the same kind of source.
+    fs::write(
+        dir.join("config.toml"),
+        "[agent.implementer]\r\ncommand = [\"runner\", \"{notes}\"]\r\n\
+         prompt_append = \"\"\"First line.\r\nSecond line.\"\"\"\r\n",
+    )
+    .expect("config");
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    state
+        .create_assigned(
+            "CRLF notes",
+            Some("alpha\r\nbeta\rgamma".into()),
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+            Some("implementer".into()),
+        )
+        .expect("task");
+    store.save(&state).expect("save");
+
+    let output = run_with(
+        [
+            "tsk",
+            "dispatch",
+            "T1",
+            "--show-prompt",
+            "--state-dir",
+            dir.to_str().expect("utf-8 path"),
+        ],
+        Cursor::new(Vec::<u8>::new()),
+        true,
+    );
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert!(
+        !output.stdout.contains("\\u{000d}"),
+        "no carriage return survives: {:?}",
+        output.stdout
+    );
+    assert!(
+        output
+            .stdout
+            .contains("command: runner alpha\\u{000a}beta\\u{000a}gamma"),
+        "{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.ends_with("First line.\nSecond line.\n"),
+        "{}",
+        output.stdout
+    );
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
 /// The Windows launcher hands a hostile prompt and the profile's env to a real program
 /// (`tsk.exe`, which stores the prompt as a task's notes) through Windows PowerShell 5.1
 /// exactly: quotes, `$`, `%`, cmd metacharacters, a newline, backslashes, non-ASCII.
