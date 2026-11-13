@@ -16,6 +16,7 @@ use crate::domain::{
     BlockOn,
 };
 use crate::ui::queue::{GroupBy, SortBy};
+use crate::ui::split_line_breaks;
 
 pub const CONFIG_TEMP_PREFIX: &str = ".config.toml.tmp.";
 static CONFIG_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -1424,6 +1425,9 @@ fn parse_review_on(value: &str) -> Result<Option<String>, String> {
     })
 }
 
+/// Substitute the known placeholders, then hand the result over with LF line endings only:
+/// a CRLF `config.toml` or task text would otherwise reach the agent with stray carriage
+/// returns.
 fn render_template(template: &str, context: &RenderContext<'_>, on: &str) -> String {
     let number = context.number.to_string();
     let replacements = [
@@ -1451,7 +1455,16 @@ fn render_template(template: &str, context: &RenderContext<'_>, on: &str) -> Str
             remaining = &remaining[character.len_utf8()..];
         }
     }
-    rendered
+    normalize_newlines(rendered)
+}
+
+/// Every `\r\n` and lone `\r` becomes `\n`, by the crate's one definition of a line break
+/// ([`crate::ui::split_line_breaks`]); nothing else changes.
+fn normalize_newlines(text: String) -> String {
+    if !text.contains('\r') {
+        return text;
+    }
+    split_line_breaks(&text).collect::<Vec<_>>().join("\n")
 }
 
 /// One `/bin/sh` single-quoted word. NUL is dropped: no program argument or variable can
@@ -2129,6 +2142,41 @@ command = ["pi"]
                 "{unknown}",
                 "Task T101\nFirst line\nSecond line\n[ ] parse\n[x] validate",
             ]
+        );
+    }
+
+    #[test]
+    fn rendering_normalizes_crlf_and_lone_carriage_returns_to_lf() {
+        let dir = TempDir::new("crlf-config");
+        // A Windows editor writes `config.toml` with CRLF, and a multi-line TOML string keeps
+        // it. The notes come from the store, which can hold CRLF from the same source.
+        dir.write(
+            "[agent.implementer]\r\n\
+             command = [\"runner\", \"{notes}\"]\r\n\
+             prompt_append = \"\"\"First line\r\nSecond line\"\"\"\r\n",
+        );
+        let profiles = AgentProfiles::load(dir.path()).expect("CRLF config parses");
+        let profile = profiles.get("implementer").expect("profile");
+        let context = RenderContext {
+            notes: "alpha\r\nbeta\rgamma",
+            ..context()
+        };
+
+        let rendered = profile.render(&context, None);
+        assert!(
+            !rendered.argv.iter().any(|argument| argument.contains('\r')),
+            "{:?}",
+            rendered.argv
+        );
+        assert_eq!(rendered.argv[1], "alpha\nbeta\ngamma");
+        assert!(
+            rendered
+                .argv
+                .last()
+                .expect("prompt")
+                .ends_with("First line\nSecond line"),
+            "{:?}",
+            rendered.argv.last()
         );
     }
 

@@ -52,6 +52,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - A bare token in an https backup URL is removed and masked even when the URL does not start at the scheme.
 - An open board shows the update notice as soon as the release check finishes, and a board left open checks again once a day.
 - A token in a backup URL stays out of git's command line and the backup's local clone, so other local users cannot see it.
+- A prompt or command argument rendered from a CRLF `config.toml` or task text reaches the agent with LF endings ([dispatch](https://gettsk.sh/docs/dispatch/)).
 
 ## v0.13.0
 
