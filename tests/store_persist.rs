@@ -504,11 +504,11 @@ fn literal_v6_fixture_migrates_to_canonical_current() {
     );
 }
 
-/// A dispatch dev build wrote the v6 layout as v7, the number the released format now uses.
-/// It opens as the current format, and its first save writes the current wire. There is no
-/// version copy: the number is the same.
+/// A dispatch dev build wrote the v6 layout as v7, the number the released format uses. It
+/// opens as v7, migrates to the current format, and its first save writes the current wire
+/// while keeping the original as `tsk.json.v7`.
 #[test]
-fn literal_dev_v7_fixture_opens_as_the_current_format() {
+fn literal_dev_v7_fixture_opens_as_v7_and_migrates_to_the_current_format() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let v7 = include_bytes!("fixtures/dev_store_v7.json");
@@ -518,11 +518,15 @@ fn literal_dev_v7_fixture_opens_as_the_current_format() {
     let loaded = store.load().expect("load dev v7 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
     store.save(&loaded).expect("save");
-    assert!(!dir.join("tsk.json.v7").exists());
+    assert_eq!(
+        fs::read(dir.join("tsk.json.v7")).expect("v7 copy"),
+        v7.as_slice(),
+        "the v7 original is backed up byte-identically"
+    );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         platform_current_fixture().as_slice(),
-        "a dev v7 state must serialize as canonical platform v7"
+        "a dev v7 state must serialize as canonical platform v8"
     );
 }
 

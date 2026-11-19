@@ -1711,18 +1711,12 @@ impl From<serde_json::Error> for StoreError {
 mod tests {
     use super::*;
     use crate::domain::{ProvenanceOrigin, TaskScope};
-    use std::sync::{Mutex, OnceLock};
     use uuid::Uuid;
 
     static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    /// Serialize env mutation across tests in this process.
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        crate::test_env::env_lock()
     }
 
     fn temp_dir(label: &str) -> PathBuf {

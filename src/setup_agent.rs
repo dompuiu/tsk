@@ -1241,9 +1241,7 @@ fn io_error(error: io::Error) -> Error {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::sync::{Mutex, OnceLock};
 
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn test_root(kind: &str) -> PathBuf {
@@ -1255,10 +1253,7 @@ mod tests {
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        crate::test_env::env_lock()
     }
 
     struct OmpEnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
@@ -1301,15 +1296,15 @@ mod tests {
     #[test]
     fn embedded_skill_declares_semver() {
         let version = embedded_skill_version();
-        assert_eq!(version, "1.8.0");
-        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.8.0"));
+        assert_eq!(version, "1.9.0");
+        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.9.0"));
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in SKILL_MD.bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         assert_eq!(
-            hash, 0xc8df_587c_0ebd_bda3,
+            hash, 0x7c82_818a_a6c9_4b20,
             "skills/tsk-cli/SKILL.md changed: refresh this hash pin, and bump `version:` only if this is the first skill edit since the last release"
         );
     }
@@ -1334,7 +1329,7 @@ mod tests {
         assert!(COORDINATOR_MD.contains("\nname: tsk-coordinator\n"));
         assert_eq!(
             fnv1a(COORDINATOR_MD),
-            0x208c_5e4e_dc95_d234,
+            0xddb4_54a0_c6b5_0106,
             "skills/tsk-coordinator/SKILL.md changed: refresh this hash pin, and bump both skills' `version:` only if this is the first skill edit since the last release"
         );
     }

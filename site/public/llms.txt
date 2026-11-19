@@ -31,10 +31,9 @@ The human works the board in a TUI; agents read and write the same tasks with th
 - Run `tsk guide` first: it prints the workflow and the rules. `tsk help <command>` is the syntax reference.
 - Read with `tsk list --json`. Each row carries `steps_done` and `steps_total`. `tsk list T12 --json` returns one task in full: notes, steps, block, review, dispatch, and `activity`.
 - Write with `tsk add`, `tsk edit`, `tsk steps`, and `tsk checks`. Read the exit code before any retry; `tsk reply`, `tsk dispatch`, `tsk edit --append-notes`, and some `tsk steps` commands are not idempotent.
-- When your work is finished, hand it back: `tsk status T12 review --done "…" --check "…"`. Set `done` only when the user says so.
+- When your work is finished, hand it back: `tsk status T12 review --done "…" --check "…"`. Set `done` only when the user says so; `tsk status T12 done --merge` lands the work: its pull request with `gh`, or its branch when `config.toml` sets `[workflow] pull_requests = false`. Nothing is pushed by tsk.
 - When you need the human: `tsk status T12 blocked --why "…" --option "…"`, then stop. `tsk reply T12 "…"` answers a block or adds review feedback.
 - `tsk dispatch T12` launches an assigned project task's agent in Herdr or Rex. `tsk dispatch T12 --show-prompt` prints the prompt it would send. `tsk clean T12` removes its worktree and merged branch, and closes its Herdr workspace or Rex tab; never clean the worktree you run in.
-- `tsk status T12 done --merge` lands the task's work: its pull request with `gh`, or its branch in the project clone when `config.toml` sets `[workflow] pull_requests = false`. Nothing is pushed by tsk.
 - Inside a dispatched agent, `TSK_AGENT` names the profile as the author of each change.
 - Guide: https://gettsk.sh/docs/agents.md
 - Coordinating other agents (briefs, review gate, live tests): https://gettsk.sh/docs/coordinator.md
