@@ -35,6 +35,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 - `tsk setup herdr` keeps your shortcut when a shell command already invokes the plugin action, and no longer adds the default chord beside it.
 - A prompt or command argument rendered from a CRLF `config.toml` or task text reaches the agent with LF endings ([dispatch](https://gettsk.sh/docs/dispatch/)).
+- A backup that raced another machine retries the push instead of recording the rejection.
 
 ## v0.14.1
 

@@ -1282,6 +1282,7 @@ fn backup_to_git(
             "fetch first",
             "cannot lock ref",
             "reference already exists",
+            "incorrect old value provided",
         ]
         .iter()
         .any(|sign| stderr.contains(sign));
